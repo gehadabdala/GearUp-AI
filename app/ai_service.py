@@ -1,28 +1,40 @@
-from google import genai
+import google.generativeai as genai
 from app.config import settings
+from openai import OpenAI
 
 class AIService:
     def __init__(self):
-        # المكتبة الجديدة بتعرف تتعامل مع المفتاح بتاعك تلقائياً
-        self.client = genai.Client(api_key=settings.GEMINI_API_KEY)
-        # هنستخدم الموديل اللي شفته شغال عندك في الـ Studio
-        self.model_id = "gemini-1.5-flash-latest"
-
-    async def generate_response(self, user_query: str, context_docs: list):
-        # تحويل القائمة لنص بسيط
-        context_text = "\n".join(context_docs)
+      # الربط بـ OpenRouter باستخدام مكتبة OpenAI
+        self.client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=settings.OPENROUTER_API_KEY, 
+        )
+    async def generate_response(self, user_query: str, context_docs: list = None):
+        # 1. تحويل القائمة لنص بسيط
+        context_text = "\n".join(context_docs) if context_docs else "لا توجد معلومات فنية محددة."
         
-        prompt = f"أنت خبير سيارات. بناءً على هذه المعلومات: {context_text}\nأجب على: {user_query}"
+        prompt = (
+            f"أنت GearUp AI، مساعد ذكي متخصص **فحص حصري** في صيانة وأعطال السيارات فقط.\n"
+            f"نطاق عملك: تقديم حلول ميكانيكية بناءً على هذه المعلومات: {context_text}\n"
+            f"قاعدة صارمة: إذا سألك المستخدم عن أي شيء خارج عالم السيارات (مثل المطاعم، الطبخ، الرياضة، إلخ)، "
+            f"يجب عليك الاعتذار فوراً وتوضيح أن تخصصك هو 'السيارات فقط' ولا تقدم أي نصائح أخرى.\n"
+            f"سؤال المستخدم: {user_query}"
+        )
         
         try:
-            # نداء مباشر وبسيط جداً
-            response = self.client.models.generate_content(
-                model=self.model_id,
-                contents=prompt
+            # 3. نداء الموديل
+            response = self.client.chat.completions.create(
+                #model="openai/gpt-3.5-turbo",
+                model="google/gemini-2.0-flash-001",
+                messages=[
+                    {"role": "user", "content": prompt}
+                ]
             )
-            return response.text
+            
+         # استخراج النص من الرد
+            return response.choices[0].message.content
+        
         except Exception as e:
-            # لو حصل أي مشكلة، هنرجع "أول نتيجة" من قاعدة البيانات كحل احتياطي
-            if context_docs:
-                return f"عذراً، واجهت مشكلة في التعبير ولكن الحل المقترح هو: {context_docs[0]}"
-            return f"خطأ في الاتصال: {str(e)}"
+            # طباعة الخطأ في التيرمينال عشان نعرف لو الـ API مفتاحها غلط
+            print(f"OpenRouter Error: {str(e)}")
+            return "أهلاً بك! أنا GearUp، مساعدك الذكي للسيارات. كيف يمكنني مساعدتك اليوم؟"
