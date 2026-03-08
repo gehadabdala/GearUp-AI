@@ -1,4 +1,5 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException , UploadFile, File, Form
+import base64
 
 from app.models import QueryRequest, RecommendationResponse, ApprovalRequest, ApprovalResponse
 
@@ -212,22 +213,22 @@ async def get_recommendation(request: QueryRequest):
 
 # --- الجزء الخاص بتوثيق الميكانيكي ---
 
-@app.post("/approve-mechanic", response_model=ApprovalResponse)
-
-async def approve_mechanic(request: ApprovalRequest):
-
-    try:
-
-        result = await approval_service.verify_document(
-
-            doc_type=request.doc_type,
-
-            doc_content=request.doc_content
-
-        )
-
-        return ApprovalResponse(**result)
-
-    except Exception as e:
-
-        raise HTTPException(status_code=500, detail=f"خطأ في عملية التوثيق: {str(e)}")
+@app.post("/approve-mechanic")
+async def approve_mechanic(
+    mechanic_id: str = Form(...),
+    doc_type: str = Form(...),
+    file: UploadFile = File(...) # ده اللي هيطلع زرار الرفع في الـ Swagger
+):
+    # 1. قراءة محتوى الصورة وتحويلها لـ Base64
+    contents = await file.read()
+    encoded = base64.b64encode(contents).decode("utf-8")
+    # تجهيز الـ URL اللي OpenRouter بيفهمه
+    image_data_url = f"data:{file.content_type};base64,{encoded}"
+    
+    # 2. إرسال البيانات للـ ApprovalService
+    # (تأكدي إن الـ verify_document عندك بتنادي self.ai.get_ocr_text)
+    result = await approval_service.verify_document(
+        doc_type=doc_type,
+        image_data=image_data_url
+    )
+    return result

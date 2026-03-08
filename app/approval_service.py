@@ -1,3 +1,4 @@
+from ast import pattern
 import re
 from app.ai_service import AIService
 
@@ -11,43 +12,38 @@ class ApprovalService:
             "national_id": r'^[23]\d{13}$' # الرقم القومي (14 رقم بيبدأ بـ 2 أو 3)
         }
 
-    async def verify_document(self, doc_type: str, doc_content: str):
-        doc_content = str(doc_content).strip() # تنظيف النص من أي مسافات
+    async def verify_document(self, doc_type: str,image_data: str):
+        prompt = f"استخرج رقم الـ {doc_type} من هذه الصورة. رد بالرقم فقط."
+        try:
         
-        # 1. التحقق من النمط (Pattern Matching)
+            extracted_text = await self.ai.get_ocr_text(prompt, image_data)
+            doc_content = str(extracted_text).strip()
+            print(f"DEBUG: الرقم اللي الـ AI قرأه: {doc_content}")
+
+        except Exception as e:
+            print(f"DEBUG: Error in AI OCR: {e}")
+            return {"status": "Rejected", "message": "فشل قراءة الوثيقة، يرجى رفع صورة أوضح."}
+        
         pattern = self.patterns.get(doc_type)
         is_pattern_valid = False
-        if pattern:
-            is_pattern_valid = bool(re.match(pattern, doc_content))
-        
-        print(f"DEBUG: Pattern Check for {doc_type}: {is_pattern_valid}")
+        clean_id = ""
 
-        # 2. استخدام الذكاء الاصطناعي (خلينا نخلي الـ Prompt أوضح)
-        prompt = f"""
-        تحقق من منطقية الرقم التالي لوثيقة من نوع ({doc_type}):
-        الرقم: {doc_content}
-        إذا كان الرقم يتكون من 14 رقم ويبدأ بـ 2 أو 3 فهو رقم قومي مصري منطقي.
-        رد بكلمة واحدة فقط: "Valid" أو "Invalid".
-        """
-        
-        try:
-            ai_analysis = await self.ai.generate_response(prompt, [])
-            is_ai_valid = "Valid" in ai_analysis
-            print(f"DEBUG: AI Check: {is_ai_valid} (Response: {ai_analysis})")
-        except:
-            is_ai_valid = True 
+
+        if pattern and doc_content:
+            match = re.search(pattern, doc_content)
+            if match:
+                clean_id = match.group()
+                is_pattern_valid = True
 
         # 3. القرار النهائي
-        # لو النمط صح، هنمشيها Approved حتى لو الـ AI هنج
         if is_pattern_valid:
             return {
                 "status": "Approved",
-                "score": 100,
-                "message": "تم قبول الوثيقة وتوثيق الحساب بنجاح."
+                "extracted_number": clean_id,
+                "message": f"تم التحقق من صحة {doc_type} وقبول التسجيل بنجاح."
             }
         else:
             return {
                 "status": "Rejected",
-                "score": 0,
-                "message": "البيانات المدخلة غير مطابقة للنمط المطلوب. يرجى التأكد من إدخال 14 رقم صحيح للرقم القومي."
+                "message": f"الرقم ({doc_content}) لا يطابق شروط {doc_type}."
             }

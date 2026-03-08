@@ -16,8 +16,7 @@ class RecommendationResponse(BaseModel):
 class ApprovalRequest(BaseModel):
     mechanic_id: str
     doc_type: str  # مثل: commercial_reg, tax_card, national_id
-    doc_content: str # الرقم أو النص المكتوب في الوثيقة
-
+    image_data: str # الوثيقه اللي هيرفعها الميكانيكي
 # موديل رد التوثيق
 class ApprovalResponse(BaseModel):
     status: str

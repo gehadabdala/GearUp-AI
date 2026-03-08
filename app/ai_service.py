@@ -38,3 +38,29 @@ class AIService:
             # طباعة الخطأ في التيرمينال عشان نعرف لو الـ API مفتاحها غلط
             print(f"OpenRouter Error: {str(e)}")
             return "أهلاً بك! أنا GearUp، مساعدك الذكي للسيارات. كيف يمكنني مساعدتك اليوم؟"
+        
+
+
+
+        # الدالة الجديدة الخاصة بالـ OCR فقط
+    async def get_ocr_text(self, prompt: str, image_data_url: str):
+        try:
+            response = self.client.chat.completions.create(
+                model="google/gemini-2.0-flash-001", # موديل سريع ودقيق في الصور
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": image_data_url}
+                            },
+                        ],
+                    }
+                ],
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            print(f"OCR Error: {str(e)}")
+            return ""
