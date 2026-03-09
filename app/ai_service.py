@@ -2,60 +2,66 @@ import google.generativeai as genai
 from app.config import settings
 from openai import OpenAI
 
+
 class AIService:
     def __init__(self):
-      # الربط بـ OpenRouter باستخدام مكتبة OpenAI
+        # الربط بـ OpenRouter باستخدام مكتبة OpenAI
         self.client = OpenAI(
             base_url="https://openrouter.ai/api/v1",
-            api_key=settings.OPENROUTER_API_KEY, 
+            api_key=settings.OPENROUTER_API_KEY,
         )
-    async def generate_response(self, user_query: str, context_docs: list = None):
-        # 1. تحويل القائمة لنص بسيط
-        context_text = "\n".join(context_docs) if context_docs else "لا توجد معلومات فنية محددة."
-        
-        prompt = (
-            f"أنت GearUp AI، مساعد ذكي متخصص **فحص حصري** في صيانة وأعطال السيارات فقط.\n"
-            f"نطاق عملك: تقديم حلول ميكانيكية بناءً على هذه المعلومات: {context_text}\n"
-            f"قاعدة صارمة: إذا سألك المستخدم عن أي شيء خارج عالم السيارات (مثل المطاعم، الطبخ، الرياضة، إلخ)، "
-            f"يجب عليك الاعتذار فوراً وتوضيح أن تخصصك هو 'السيارات فقط' ولا تقدم أي نصائح أخرى.\n"
-            f"سؤال المستخدم: {user_query}"
+
+    async def generate_response(
+        self, user_query: str, context_docs: list = None, image_data_url: str = None
+    ):
+        context_text = (
+            "\n".join(context_docs) if context_docs else "لا توجد معلومات فنية محددة."
         )
+
+        system_prompt = f"""
+        أنت GearUp AI، مساعد ميكانيكي محترف وصارم.
+        نطاق عملك: صيانة السيارات فقط.
         
+        قواعد الرد الإلزامية:
+        1. إذا كانت الصورة أو النص لا يتعلقان بأعطال السيارات، اعتذر فوراً (أنا متخصص في السيارات فقط).
+        2. إذا وجدت صورة، ابدأ ردك بعبارة "بناءً على الصورة المرفقة..." وقم بتحليلها تقنياً.
+        3. يجب أن يحتوي الرد على العناصر التالية بتنسيق Markdown:
+           - **🔍 التشخيص المحتمل (Potential Fault):** اسم العطل.
+           - **📊 مستوى التأكد (Confidence Level):** نسبة مئوية.
+           - **⚠️ درجة الخطورة (Urgency Status):** (Low/Medium/High).
+           - **🛠️ خطوات الإصلاح:** في نقاط واضحة.
+        
+        المعلومات الفنية المتاحة: {context_text}
+        """
+
+        content = [{"type": "text", "text": user_query}]
+        if image_data_url:
+            content.append({"type": "image_url", "image_url": {"url": image_data_url}})
+
         try:
-            # 3. نداء الموديل
             response = self.client.chat.completions.create(
-                #model="openai/gpt-3.5-turbo",
                 model="google/gemini-2.0-flash-001",
                 messages=[
-                    {"role": "user", "content": prompt}
-                ]
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": content},
+                ],
+                temperature=0.2,
             )
-            
-         # استخراج النص من الرد
             return response.choices[0].message.content
-        
         except Exception as e:
-            # طباعة الخطأ في التيرمينال عشان نعرف لو الـ API مفتاحها غلط
-            print(f"OpenRouter Error: {str(e)}")
-            return "أهلاً بك! أنا GearUp، مساعدك الذكي للسيارات. كيف يمكنني مساعدتك اليوم؟"
-        
+            print(f"Error: {e}")
+            return "عذراً، أنا GearUp AI. واجهت مشكلة في تحليل العطل. يرجى وصف المشكلة بوضوح."
 
-
-
-        # الدالة الجديدة الخاصة بالـ OCR فقط
     async def get_ocr_text(self, prompt: str, image_data_url: str):
         try:
             response = self.client.chat.completions.create(
-                model="google/gemini-2.0-flash-001", # موديل سريع ودقيق في الصور
+                model="google/gemini-2.0-flash-001",
                 messages=[
                     {
                         "role": "user",
                         "content": [
                             {"type": "text", "text": prompt},
-                            {
-                                "type": "image_url",
-                                "image_url": {"url": image_data_url}
-                            },
+                            {"type": "image_url", "image_url": {"url": image_data_url}},
                         ],
                     }
                 ],
