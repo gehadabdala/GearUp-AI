@@ -1,10 +1,7 @@
 fastapi
 uvicorn
 python-multipart
-openai
 google-generativeai
-chromadb
 pandas
 openpyxl
-sentence-transformers
-pysqlite3-binary
+python-dotenv

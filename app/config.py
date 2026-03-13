@@ -13,7 +13,8 @@ class Settings:
     )
     CHROMA_PATH = "./chroma_db"
     # استخدمي حرف r قبل المسار عشان الـ Backslashes ما تعملش مشكلة في ويندوز
-    EXCEL_PATH = r"F:\gearup_recommendation\data\CarFaults_50000.xlsx"
+    # بدال المسار الطويل اللي بيبدأ بـ F:\
+    EXCEL_PATH = "data/CarFaults_50000.xlsx"
     EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 
 
