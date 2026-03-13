@@ -1,6 +1,6 @@
 ---
 title: GearUp_AI
-emoji: 🏎️
+emoji: 🚙
 colorFrom: blue
 colorTo: green
 sdk: docker
