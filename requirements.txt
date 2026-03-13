@@ -6,4 +6,5 @@ google-generativeai
 chromadb
 pandas
 openpyxl
-networkx
+sentence-transformers
+pysqlite3-binary
