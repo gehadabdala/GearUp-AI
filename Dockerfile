@@ -1,20 +1,16 @@
-# استخدام نسخة بايثون خفيفة
-FROM python:3.10-slim
+FROM python:3.13-slim
 
-# تحديد فولدر الشغل جوه السيرفر
 WORKDIR /app
 
-# نسخ ملف المكتبات أولاً
-COPY requirements.txt .
+# تثبيت أدوات البناء الأساسية عشان بعض المكتبات بتحتاجها في 3.13
+RUN apt-get update && apt-get install -y build-essential && rm -rf /var/lib/apt/lists/*
 
-# تثبيت المكتبات
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip
 RUN pip install --no-cache-dir -r requirements.txt
 
-# نسخ باقي ملفات المشروع
 COPY . .
 
-# فتح البورت 8000
 EXPOSE 8000
 
-# أمر تشغيل السيرفر
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
