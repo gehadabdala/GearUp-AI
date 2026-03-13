@@ -12,7 +12,7 @@ class AIService:
         )
 
     async def generate_response(
-        self, user_query: str, context_docs: list = None, image_data_url: str = None
+        self, chat_hist: list, context_docs: list = None, image_data_url: str = None
     ):
         context_text = (
             "\n".join(context_docs) if context_docs else "لا توجد معلومات فنية محددة."
@@ -34,17 +34,22 @@ class AIService:
         المعلومات الفنية المتاحة: {context_text}
         """
 
-        content = [{"type": "text", "text": user_query}]
+        formatted_messages = [{"role": "system", "content": system_prompt}]
+
+        for msg in chat_hist:
+            formatted_messages.append({"role": msg.role, "content": msg.content})
+
         if image_data_url:
-            content.append({"type": "image_url", "image_url": {"url": image_data_url}})
+            last_msg_content = formatted_messages[-1]["content"]
+            formatted_messages[-1]["content"] = [
+                {"type": "text", "text": last_msg_content},
+                {"type": "image_url", "image_url": {"url": image_data_url}},
+            ]
 
         try:
             response = self.client.chat.completions.create(
                 model="google/gemini-2.0-flash-001",
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": content},
-                ],
+                messages=formatted_messages,
                 temperature=0.2,
             )
             return response.choices[0].message.content
