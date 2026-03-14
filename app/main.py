@@ -39,7 +39,7 @@ async def startup_event():
 
     # تحميل البيانات من الإكسيل
 
-    db.ingest_excel()
+    # db.ingest_excel()
 
 
 @app.post("/recommend", response_model=RecommendationResponse)
