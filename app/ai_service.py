@@ -87,5 +87,5 @@ class AIService:
             )
             return response.choices[0].message.content
         except Exception as e:
-            print(f"OCR Error: {str(e)}")
-            return ""
+            print(f"Error details: {str(e)}")  # ده هيظهر في الـ Logs
+            return f"يا جهاد فيه مشكلة: {str(e)}"  # ده هيظهرلك في الـ Swagger علطول
