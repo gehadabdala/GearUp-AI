@@ -47,22 +47,20 @@ async def get_recommendation(
     query_data: str = Form(...),
     file: Optional[UploadFile] = File(None),
 ):
-
     try:
-
         try:
             data_dict = json.loads(query_data)
-        except Exception as e:
+        except Exception:
             raise HTTPException(
-                status_code=400, detail=f"query_data must be a valid JSON string"
+                status_code=400, detail="query_data must be a valid JSON string"
             )
 
-        # استخراج الرسائل وآخر وصف
         messages_raw = data_dict.get("messages", [])
         if not messages_raw:
             raise HTTPException(
-                status_code=400, detail=f"Message list is required in query_data"
+                status_code=400, detail="Message list is required in query_data"
             )
+
         messages = [Message(**m) for m in messages_raw]
         description = messages[-1].content
 
@@ -72,12 +70,13 @@ async def get_recommendation(
             encoded = base64.b64encode(contents).decode("utf-8")
             image_data_url = f"data:{file.content_type};base64,{encoded}"
 
-        # 1. البحث في قاعدة البيانات (حسبناه بدري عشان نستخدم الـ Distance)
+        # 1. البحث في قاعدة البيانات
         search_results = db.search(description, n_results=1)
         distances = search_results.get("distances", [[]])[0]
-        is_far_match = not distances or distances[0] > 0.7
+        # خليت المسافة 0.8 عشان ندي فرصة أكبر للبحث السيمانتك
+        is_far_match = not distances or distances[0] > 0.8
 
-        # 2. الكلمات المفتاحية
+        # 2. الكلمات المفتاحية (زي ما هي بالظبط)
         car_keywords = [
             "صوت",
             "خبط",
@@ -97,28 +96,39 @@ async def get_recommendation(
             "مارش",
             "بطارية",
         ]
-        greeting_keywords = ["مين", "عرفني", "أنت", "اهلا", "سلام", "وظيفتك", "بتعمل"]
+        greeting_keywords = [
+            "مين",
+            "عرفني",
+            "أنت",
+            "اهلا",
+            "سلام",
+            "وظيفتك",
+            "بتعمل",
+            "صباح",
+            "مساء",
+        ]
 
         is_car_related = any(word in description.lower() for word in car_keywords)
         is_greeting = any(word in description.lower() for word in greeting_keywords)
 
-        # 3. فلتر الرفض والتعارف (دمجنا الشروط في بلوك واحد)
-        if is_greeting or not is_car_related or is_far_match:
-            # بنبعت الـ messages كاملة عشان الـ AI يفتكر السياق
-            ai_chat_answer = await ai.generate_response(messages, [], image_data_url)
+        # 3. فلتر الرفض والتعارف (تعديل الـ Prompt هنا عشان يبقى أذكى)
+        if is_greeting or (not is_car_related and is_far_match):
+            instructions = "أنت GearUp AI، خبير سيارات ودود. رد على التحية أو الدردشة بذكاء. إذا كان الكلام بعيداً عن السيارات، ساعده بلباقة وذكره بتخصصك."
+            ai_chat_answer = await ai.generate_response(
+                messages, [instructions], image_data_url
+            )
             return RecommendationResponse(
                 query=description, ai_answer=ai_chat_answer, source_documents=[]
             )
 
-        # 4. استخراج البيانات من الإكسيل (في حالة وجود تطابق)
+        # 4. استخراج البيانات من الإكسيل (لو فيه تطابق)
         metadata_list = search_results["metadatas"][0]
         top_case = metadata_list[0]
-
         difficulty = str(top_case.get("مستوى الصعوبة", "سهل")).strip()
         suggested_part = top_case.get("القطعة المرشحة", "غير محدد")
         suggested_solution = top_case.get("الحل المقترح", "يرجى الفحص")
 
-        # 5. فحص الكلمات الحساسة
+        # 5. فحص الكلمات الحساسة (زي ما هي)
         serious_words = [
             "فتيس",
             "موتور",
@@ -135,31 +145,25 @@ async def get_recommendation(
             word in description.lower() for word in serious_words
         )
 
-        # 6. منطق اتخاذ القرار (مع تمرير الهيستوري والـ Instructions)
+        # 6. منطق اتخاذ القرار (دمج معلومات الإكسيل مع ذكاء الـ AI)
         if difficulty == "صعب" or contains_serious_word:
-            instructions = f"المشكلة: {description}\nالقطعة: {suggested_part}\nعطل حرج. حذر المستخدم بصرامة من الإصلاح اليدوي."
-            ai_final_answer = await ai.generate_response(
-                messages, [instructions], image_data_url
-            )
-
+            instructions = f"المشكلة: {description}\nالقطعة: {suggested_part}\nهذا عطل حرج وحساس. حذر المستخدم بجدية من الإصلاح اليدوي واشرح له العواقب، ووجهه لفني متخصص."
         elif difficulty == "متوسط":
-            instructions = f"المشكلة: {description}\nالحل الفني: {suggested_solution}\nصغ الحل بودية وانصح باستشارة فني."
-            ai_answer_raw = await ai.generate_response(
-                messages, [instructions], image_data_url
-            )
-            ai_final_answer = f"⚠️ عطل متوسط في ({suggested_part})\n\n{ai_answer_raw}"
-
+            instructions = f"المشكلة: {description}\nالحل الفني من قاعدة بياناتنا: {suggested_solution}\nصغ الحل بأسلوب مهني وودود وانصح بالاستعانة بفني إذا لزم الأمر."
         else:  # عطل سهل
-            instructions = f"المشكلة: {description}\nالحل: {suggested_solution}\nبسط الخطوات جداً مع رموز تعبيرية."
-            ai_final_answer = await ai.generate_response(
-                messages, [instructions], image_data_url
-            )
+            instructions = f"المشكلة: {description}\nالحل المقترح: {suggested_solution}\nبسط الخطوات للمستخدم جداً واستخدم الرموز التعبيرية كخبير يشرح لمبتدئ."
+
+        # هنا الـ AI هيستخدم الـ instructions عشان يطلع الرد النهائي العسل
+        ai_final_answer = await ai.generate_response(
+            messages, [instructions], image_data_url
+        )
 
         return RecommendationResponse(
             query=description, ai_answer=ai_final_answer, source_documents=metadata_list
         )
 
     except Exception as e:
+        # رجعنا الخطأ الحقيقي عشان لو فيه مشكلة في الـ API نعرفها
         raise HTTPException(status_code=500, detail=f"حدث خطأ في النظام: {str(e)}")
 
 

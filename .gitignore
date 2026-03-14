@@ -2,4 +2,4 @@ chroma_db/
 .venv/
 __pycache__/
 .env
-*.xlsx
+data/CarFaults_50000.xlsx
