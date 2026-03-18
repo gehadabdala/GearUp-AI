@@ -9,5 +9,5 @@ openpyxl
 sentence-transformers
 pysqlite3-binary
 python-dotenv
-openai
-
+pyngrok
+nest_asyncio
