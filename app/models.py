@@ -19,6 +19,9 @@ class RecommendationResponse(BaseModel):
     query: str
     ai_answer: str
     source_documents: List[dict]  # لعرض المصادر التي اعتمد عليها الـ AI
+    requires_feedback: bool = False #عشان نضمن إن الزراير تظهر بس وقت الأعطال والصيانة (ومش في التحيات)
+    requires_mechanic: bool = False  # 👈 الإشارة للفرونت عشان يظهر زراير الطلب
+    recommended_mechanics: list = []  # 👈 اللستة اللي الفرونت هياخد منها الـ IDs
 
 
 # موديل طلب التوثيق
