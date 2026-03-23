@@ -4,7 +4,7 @@ from typing import Optional
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 import pymssql
-
+import functools
 from app.config import settings
 from app.approval_service import ApprovalService
 from app.models import (
@@ -25,71 +25,104 @@ ai = None
 approval_service = ApprovalService()
 
 
+def safe_db_call(func):
+    """دالة حماية عشان الكود ميفصلش لو الداتابيز وقعت"""
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            print(f"❌ Database Error in {func.__name__}: {e}")
+            return None
+
+    return wrapper
+
+
 # ==========================================
 # دوال قاعدة البيانات (Database Helpers)
 # ==========================================
+@safe_db_call
 def get_mechanics_from_db(specialty: str, sub_specialty: str):
-    """دالة للبحث عن الميكانيكية المتاحين بناءً على التخصص بربط 4 جداول"""
-    try:
-        conn = pymssql.connect(
-            server=settings.DB_SERVER,
-            user=settings.DB_USER,
-            password=settings.DB_PASSWORD,
-            database=settings.DB_NAME,
-        )
-        cursor = conn.cursor(as_dict=True)
+    """دالة للبحث عن الميكانيكية المتاحين (محمية ونظيفة)"""
+    conn = pymssql.connect(
+        server=settings.DB_SERVER,
+        user=settings.DB_USER,
+        password=settings.DB_PASSWORD,
+        database=settings.DB_NAME,
+    )
+    cursor = conn.cursor(as_dict=True)
 
-        query = f"""
-            SELECT TOP 3 
-                u.FirstName + ' ' + u.LastName AS Name, 
-                u.Phone, 
-                mp.Location_Latitude AS Latitude,
-                mp.Location_Longitude AS Longitude
-            FROM dbo.Users u
-            INNER JOIN dbo.MechanicProfile mp ON u.Id = mp.UserId
-            INNER JOIN dbo.Specialization s ON mp.Id = s.MechanicProfileId
-            LEFT JOIN dbo.SubSpecialization ss ON s.Id = ss.SpecializationId
-            WHERE 
-                mp.IsAvailable = 1 
-                AND (s.Name LIKE N'%{specialty}%' OR ss.Name LIKE N'%{sub_specialty}%')
-        """
-        cursor.execute(query)
-        mechanics = cursor.fetchall()
-        conn.close()
-        return mechanics
-    except Exception as e:
-        print(f"Database Error: {e}")
-        return []
+    query = f"""
+        SELECT TOP 3 
+            u.FirstName + ' ' + u.LastName AS Name, 
+            u.Phone, 
+            mp.Location_Latitude AS Latitude,
+            mp.Location_Longitude AS Longitude
+        FROM dbo.Users u
+        INNER JOIN dbo.MechanicProfile mp ON u.Id = mp.UserId
+        INNER JOIN dbo.Specialization s ON mp.Id = s.MechanicProfileId
+        LEFT JOIN dbo.SubSpecialization ss ON s.Id = ss.SpecializationId
+        WHERE 
+            mp.IsAvailable = 1 
+            AND (s.Name LIKE N'%{specialty}%' OR ss.Name LIKE N'%{sub_specialty}%')
+    """
+    cursor.execute(query)
+    mechanics = cursor.fetchall()
+    conn.close()
+    return mechanics
 
 
+@safe_db_call
 def get_user_context_data(user_id: str):
-    """دالة لجلب اسم المستخدم وماركة سيارته لتحديد صيغة المخاطبة"""
+    """دالة لجلب اسم المستخدم وماركة سيارته (نسخة نظيفة ومحمية)"""
     if not user_id:
         return None
 
-    try:
-        conn = pymssql.connect(
-            server=settings.DB_SERVER,
-            user=settings.DB_USER,
-            password=settings.DB_PASSWORD,
-            database=settings.DB_NAME,
-        )
-        cursor = conn.cursor(as_dict=True)
+    conn = pymssql.connect(
+        server=settings.DB_SERVER,
+        user=settings.DB_USER,
+        password=settings.DB_PASSWORD,
+        database=settings.DB_NAME,
+    )
+    cursor = conn.cursor(as_dict=True)
 
-        query = f"""
-            SELECT TOP 1 u.FirstName, c.Brand, c.Model, c.Year 
-            FROM dbo.Users u
-            LEFT JOIN dbo.CustomerProfile cp ON u.Id = cp.UserId
-            LEFT JOIN dbo.Car c ON cp.Id = c.CustomerProfileId
-            WHERE u.Id = '{user_id}'
-        """
-        cursor.execute(query)
-        data = cursor.fetchone()
-        conn.close()
-        return data
-    except Exception as e:
-        print(f"Database Error (Context): {e}")
-        return None
+    query = f"""
+        SELECT TOP 1 u.FirstName, c.Brand, c.Model, c.Year 
+        FROM dbo.Users u
+        LEFT JOIN dbo.CustomerProfile cp ON u.Id = cp.UserId
+        LEFT JOIN dbo.Car c ON cp.Id = c.CustomerProfileId
+        WHERE u.Id = '{user_id}'
+    """
+    cursor.execute(query)
+    data = cursor.fetchone()
+    conn.close()
+    return data
+
+
+@safe_db_call
+def get_mechanic_schedule(mechanic_name: str):
+    """دالة لجلب المواعيد المتاحة لميكانيكي محدد بالاسم (محمية)"""
+    conn = pymssql.connect(
+        server=settings.DB_SERVER,
+        user=settings.DB_USER,
+        password=settings.DB_PASSWORD,
+        database=settings.DB_NAME,
+    )
+    cursor = conn.cursor(as_dict=True)
+
+    query = f"""
+        SELECT AvailableDate, StartTime, EndTime 
+        FROM dbo.MechanicSchedules ms
+        INNER JOIN dbo.MechanicProfile mp ON ms.MechanicProfileId = mp.Id
+        INNER JOIN dbo.Users u ON mp.UserId = u.Id
+        WHERE (u.FirstName + ' ' + u.LastName) LIKE N'%{mechanic_name}%'
+        AND ms.IsBooked = 0
+    """
+    cursor.execute(query)
+    schedules = cursor.fetchall()
+    conn.close()
+    return schedules
 
 
 # ==========================================
@@ -121,21 +154,9 @@ async def get_recommendation(
     file: Optional[UploadFile] = File(None),
 ):
     try:
-        # 1. معالجة المدخلات
-        try:
-            data_dict = json.loads(query_data)
-        except Exception:
-            raise HTTPException(
-                status_code=400, detail="query_data must be a valid JSON string"
-            )
-
-        messages_raw = data_dict.get("messages", [])
-        if not messages_raw:
-            raise HTTPException(
-                status_code=400, detail="Message list is required in query_data"
-            )
-
-        messages = [Message(**m) for m in messages_raw]
+        # 1. تجهيز البيانات والصورة
+        data_dict = json.loads(query_data)
+        messages = [Message(**m) for m in data_dict.get("messages", [])]
         description = messages[-1].content
 
         image_data_url = None
@@ -144,37 +165,17 @@ async def get_recommendation(
             encoded = base64.b64encode(contents).decode("utf-8")
             image_data_url = f"data:{file.content_type};base64,{encoded}"
 
-        # 1. البحث في قاعدة البيانات
-        search_results = db.search(description, n_results=1)
-        distances = search_results.get("distances", [[]])[0]
-        # خليت المسافة 0.8 عشان ندي فرصة أكبر للبحث السيمانتك
-        is_far_match = not distances or distances[0] > 0.8
-
-        # 2. الكلمات المفتاحية (زي ما هي بالظبط)
-        # 2. جلب بيانات سياق المستخدم
+        # 2. جلب سياق المستخدم (اللي أنتي كنتِ كاتباه بالظبط)
         user_data = get_user_context_data(user_id)
         user_context = ""
-
         if user_data:
             f_name = user_data.get("FirstName", "يا صديقي")
             car_brand = user_data.get("Brand", "")
             car_model = user_data.get("Model", "")
             car_year = user_data.get("Year", "")
+            user_context = f"[معلومة سرية: اسم المستخدم {f_name}، سيارته {car_brand} {car_model} موديل {car_year}. استخدم صيغة المذكر/المؤنث الصح واذكر اسم سيارته بلطافة.]"
 
-            user_context = f"""
-            [معلومة سرية لك: 
-            - اسم المستخدم: {f_name}
-            - سيارته: {car_brand} {car_model} موديل {car_year}. 
-            - تعليمات هامة: استنتج نوع المستخدم (ذكر/أنثى) من الاسم ({f_name}) واستخدم ضمائر المخاطبة العربية الصحيحة. خصص إجابتك لتناسب سيارته واذكر اسمها بلطافة.]
-            """
-            print(f"👤 المستخدم: {f_name} | السيارة: {car_brand} {car_model}")
-
-        # 3. البحث في قاعدة البيانات (Vector DB)
-        search_results = db.search(description, n_results=1)
-        distances = search_results.get("distances", [[]])[0]
-        is_far_match = not distances or distances[0] > 1.5
-
-        # 4. فلترة الكلمات المفتاحية
+        # 3. الكلمات المفتاحية (اللي أنتي كنتِ حطاها)
         car_keywords = [
             "صوت",
             "خبط",
@@ -194,6 +195,10 @@ async def get_recommendation(
             "مارش",
             "بطارية",
             "مساحات",
+            "ميكانيكي",
+            "ورشة",
+            "فني",
+            "تصليح",
         ]
         greeting_keywords = [
             "مين",
@@ -210,31 +215,58 @@ async def get_recommendation(
         is_car_related = any(word in description.lower() for word in car_keywords)
         is_greeting = any(word in description.lower() for word in greeting_keywords)
 
-        # 3. فلتر الرفض والتعارف (تعديل الـ Prompt هنا عشان يبقى أذكى)
+        # 4. البحث في قاعدة البيانات
+        search_results = db.search(description, n_results=1)
+        distances = search_results.get("distances", [[]])[0]
+        is_far_match = not distances or distances[0] > 0.3
+
+        # 5. منطق التحية والدردشة العامة
         if is_greeting or (not is_car_related and is_far_match):
-            instructions = "أنت GearUp AI، خبير سيارات ودود. رد على التحية أو الدردشة بذكاء. إذا كان الكلام بعيداً عن السيارات، ساعده بلباقة وذكره بتخصصك."
+            instructions = "أنت GearUp AI، خبير سيارات ودود. رد على التحية بذكاء وساعده بلباقة وذكره بتخصصك."
             ai_chat_answer = await ai.generate_response(
-                messages, [instructions], image_data_url
-            )
-        # الرد المباشر في حالة التحيات أو عدم وجود علاقة بالسيارات
-        if is_greeting or not is_car_related or is_far_match:
-            general_instructions = [user_context] if user_context else []
-            ai_chat_answer = await ai.generate_response(
-                messages, general_instructions, image_data_url
+                messages, [user_context, instructions], image_data_url
             )
             return RecommendationResponse(
                 query=description, ai_answer=ai_chat_answer, source_documents=[]
             )
 
-        # 4. استخراج البيانات من الإكسيل (لو فيه تطابق)
-        # 5. استخراج البيانات من التطابق
+        # === [إضافة جديدة: منطق فحص مواعيد الورش] ===
+        schedule_keywords = ["مواعيد", "وقت", "فاضي", "ساعة", "متاح", "يوم"]
+        asking_for_schedule = any(
+            word in description.lower() for word in schedule_keywords
+        )
+        schedule_text = ""
+
+        if asking_for_schedule:
+            extracted_name = description.lower()
+            for word in schedule_keywords + [
+                "ورشة",
+                "المهندس",
+                "ميكانيكي",
+                "يا",
+                "GearUp",
+            ]:
+                extracted_name = extracted_name.replace(word, "")
+            extracted_name = extracted_name.strip()
+
+            if extracted_name:
+                schedules = get_mechanic_schedule(extracted_name)
+                if schedules:
+                    schedule_text = f"\n📅 المواعيد المتاحة لـ {extracted_name} هي:\n"
+                    for s in schedules:
+                        schedule_text += f"- يوم {s['AvailableDate']} من {s['StartTime']} إلى {s['EndTime']}\n"
+                else:
+                    schedule_text = f"\n(للأسف لم أجد مواعيد مسجلة حالياً لـ {extracted_name} في النظام)."
+        # ============================================
+
+        # 6. استخراج بيانات العطل (صعب/متوسط/سهل)
         metadata_list = search_results["metadatas"][0]
         top_case = metadata_list[0]
         difficulty = str(top_case.get("مستوى الصعوبة", "سهل")).strip()
         suggested_part = top_case.get("القطعة المرشحة", "غير محدد")
         suggested_solution = top_case.get("الحل المقترح", "يرجى الفحص")
 
-        # 5. فحص الكلمات الحساسة (زي ما هي)
+        # الكلمات الحساسة اللي أنتي حددتيها
         serious_words = [
             "فتيس",
             "موتور",
@@ -250,113 +282,51 @@ async def get_recommendation(
         contains_serious_word = any(
             word in description.lower() for word in serious_words
         )
+        user_asking_for_workshop = any(
+            word in description.lower()
+            for word in ["ورشة", "ميكانيكي", "فني", "مركز صيانة", "تصليح"]
+        )
 
-        # 6. منطق اتخاذ القرار (دمج معلومات الإكسيل مع ذكاء الـ AI)
-        if difficulty == "صعب" or contains_serious_word:
-            instructions = f"المشكلة: {description}\nالقطعة: {suggested_part}\nهذا عطل حرج وحساس. حذر المستخدم بجدية من الإصلاح اليدوي واشرح له العواقب، ووجهه لفني متخصص."
+        # 7. جلب الميكانيكية واللوكيشن
+        mechanics_text = ""
+        if difficulty == "صعب" or contains_serious_word or user_asking_for_workshop:
+            specialty_json = await ai.extract_specialty(description, suggested_part)
+            mechanics_list = get_mechanics_from_db(
+                specialty_json.get("specialty", "ميكانيكا"),
+                specialty_json.get("sub_specialty", ""),
+            )
+            if mechanics_list:
+                mechanics_text = "\n\nإليك الفنيين المتاحين حالياً في نظامنا:\n"
+                for m in mechanics_list:
+                    map_link = f"https://www.google.com/maps?q={m['Latitude']},{m['Longitude']}"
+                    mechanics_text += f"- المهندس: {m['Name']} | 📞: {m['Phone']} | 📍 اللوكيشن: {map_link}\n"
+            elif user_asking_for_workshop or difficulty == "صعب":
+                mechanics_text = "\n\n(للأسف لم أجد فنيين متاحين حالياً، أنصحك بالتوجه لأقرب مركز صيانة معتمد)."
+
+        # 8. بناء الرد النهائي
+        if asking_for_schedule and schedule_text:
+            instructions = f"اليوزر يسأل عن مواعيد ورشة {extracted_name}. بيانات المواعيد: {schedule_text}. {user_context}. رد عليه بلباقة وأخبره بالمواعيد المتاحة."
+        elif difficulty == "صعب" or contains_serious_word:
+            instructions = f"عطل حرج! {user_context}. حذر المستخدم واعرض الميكانيكية ويجب أن يتضمن ردك قائمة الفنيين التالية: {mechanics_text}"
+        elif user_asking_for_workshop:
+            instructions = (
+                f"اليوزر محتاج ورشة. ساعده يختار: {mechanics_text}. {user_context}"
+            )
         elif difficulty == "متوسط":
-            instructions = f"المشكلة: {description}\nالحل الفني من قاعدة بياناتنا: {suggested_solution}\nصغ الحل بأسلوب مهني وودود وانصح بالاستعانة بفني إذا لزم الأمر."
-        else:  # عطل سهل
-            instructions = f"المشكلة: {description}\nالحل المقترح: {suggested_solution}\nبسط الخطوات للمستخدم جداً واستخدم الرموز التعبيرية كخبير يشرح لمبتدئ."
+            instructions = f"{user_context} الحل: {suggested_solution}. التنسيق: ⚠️ ملاحظة هامة (اطمنه)، ⚙️ إيه المشكلة والحل؟، 👨‍🔧 نصيحة الخبير."
+        else:
+            instructions = f"{user_context} الحل: {suggested_solution}. التنسيق: ✅ لا تقلق الموضوع بسيط، 🛠️ خطوات الحل (استخدم إيموجي لكل خطوة)."
 
-        # هنا الـ AI هيستخدم الـ instructions عشان يطلع الرد النهائي العسل
         ai_final_answer = await ai.generate_response(
             messages, [instructions], image_data_url
         )
-        # ==========================================
-        # 6. منطق اتخاذ القرار وتوليد الرد النهائي
-        # ==========================================
-
-        # --- العطل الحرج ---
-        if difficulty == "صعب" or contains_serious_word:
-            specialty_json = await ai.extract_specialty(description, suggested_part)
-            spec = specialty_json.get("specialty", "")
-            sub_spec = specialty_json.get("sub_specialty", "")
-
-            print(f"🔍 التخصص المستخرج: {spec} | التخصص الفرعي: {sub_spec}")
-            mechanics_list = get_mechanics_from_db(spec, sub_spec)
-            print(f"👨‍🔧 الميكانيكية المتاحين: {mechanics_list}")
-
-            mechanics_text = ""
-            if mechanics_list:
-                mechanics_text = "\n\nرشح للمستخدم هؤلاء الفنيين المتاحين في النظام للضرورة القصوى:\n"
-                for m in mechanics_list:
-                    mechanics_text += f"- المهندس: {m.get('Name', 'غير معروف')} | تليفون: {m.get('Phone', 'غير متوفر')}\n"
-            else:
-                mechanics_text = "\n\n(ملحوظة للذكاء الاصطناعي: لا يوجد فنيين متاحين، انصحه بالتوجه لأقرب مركز صيانة)."
-
-            instructions = f"""المشكلة: {description}
-            البيانات الإضافية:{user_context}
-            الميكانيكية المتاحين:{mechanics_text}
-            
-            أنت مهندس سيارات خبير. هذا عطل حرج جداً.
-            ممنوع الاعتذار أو ذكر نسبة التأكد.
-            يجب أن يكون ردك حصرياً بهذا التنسيق المرتب (استخدم Markdown والإيموجيز):
-            
-            🚨 **تحذير عاجل:**
-            (اطلب منه/منها إيقاف السيارة فوراً وطمئنه/ا بأسلوب ودود واذكر اسم سيارته/ا هنا)
-            
-            🛠️ **التشخيص المبدئي:**
-            (اشرح باختصار شديد جداً وفي سطرين كحد أقصى سبب المشكلة)
-            
-            👨‍🔧 **فنيين متاحين للإنقاذ:**
-            (اكتب هنا نص الميكانيكية المتاحين الذي تم تمريره لك بالظبط، وإذا لم يوجد، انصحه/ا بالتوجه لأقرب مركز)
-            
-            💡 **نصيحة سريعة:**
-            (نصيحة واحدة قصيرة جداً لما يجب فعله أثناء انتظار المساعدة)
-            """
-            ai_final_answer = await ai.generate_response(
-                messages, [instructions], image_data_url
-            )
-
-        # --- العطل المتوسط ---
-        elif difficulty == "متوسط":
-            instructions = f"""المشكلة: {description}
-            البيانات الإضافية: {user_context}
-            الحل المقترح من قاعدة البيانات: {suggested_solution}
-            
-            أنت مهندس سيارات ودود. هذا عطل متوسط الخطورة.
-            يجب أن يكون ردك حصرياً بهذا التنسيق المرتب (استخدم Markdown):
-            
-            ⚠️ **ملاحظة هامة:**
-            (اكتب جملة لطيفة تطمئن المستخدم مع ذكر اسم سيارته هنا واستخدم صيغة المذكر أو المؤنث الصحيحة)    
-            
-            ⚙️ **إيه المشكلة والحل؟**
-            (اشرح الحل المقترح بأسلوب مبسط ومفهوم)
-            
-            👨‍🔧 **نصيحة الخبير:**
-            (انصح باستشارة فني في أقرب فرصة لضمان عدم تفاقم المشكلة)
-            """
-            ai_final_answer = await ai.generate_response(
-                messages, [instructions], image_data_url
-            )
-
-        # --- العطل السهل ---
-        else:
-            instructions = f"""المشكلة: {description}
-            البيانات الإضافية: {user_context}
-            الحل المقترح من قاعدة البيانات: {suggested_solution}
-            
-            أنت مساعد سيارات ذكي وودود. هذا عطل سهل جداً ويمكن حله بنفسك.
-            يجب أن يكون ردك حصرياً بهذا التنسيق المرتب:
-            
-            ✅ **لا تقلق! الموضوع بسيط:**
-            (طمئن المستخدم واستخدم صيغة المذكر أو المؤنث الصحيحة بناء على الاسم واذكر اسم سيارته)
-            
-            🛠️ **خطوات الحل (جربها بنفسك):**
-            (اشرح الحل المقترح في خطوات مرقمة وبسيطة جداً مع استخدام رموز تعبيرية لكل خطوة)
-            """
-            ai_final_answer = await ai.generate_response(
-                messages, [instructions], image_data_url
-            )
 
         return RecommendationResponse(
             query=description, ai_answer=ai_final_answer, source_documents=[top_case]
         )
 
     except Exception as e:
-        # رجعنا الخطأ الحقيقي عشان لو فيه مشكلة في الـ API نعرفها
-        raise HTTPException(status_code=500, detail=f"حدث خطأ في النظام: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/approve-mechanic")
@@ -373,3 +343,86 @@ async def approve_mechanic(
         doc_type=doc_type, image_data=image_data_url
     )
     return result
+
+
+# ==========================================
+# 9. نظام تقييم الردود (Feedback System)
+# ==========================================
+@app.post("/feedback")
+async def submit_feedback(
+    user_id: str = Form(...),
+    query: str = Form(...),
+    is_helpful: bool = Form(...),
+    comment: Optional[str] = Form(None),
+):
+    """دالة لتسجيل تقييم المستخدم لرد الـ AI"""
+    try:
+        conn = pymssql.connect(
+            server=settings.DB_SERVER,
+            user=settings.DB_USER,
+            password=settings.DB_PASSWORD,
+            database=settings.DB_NAME,
+        )
+        cursor = conn.cursor()
+
+        # استعلام لإدخال التقييم
+        query_sql = """
+             INSERT INTO dbo.AI_Feedback (UserId, UserQuery, IsHelpful, UserComment, CreatedAt)
+             VALUES (%s, %s, %s, %s, GETDATE())
+         """
+        cursor.execute(query_sql, (user_id, query, is_helpful, comment))
+
+        conn.commit()
+        conn.close()
+    # print(
+    #   f"DEBUG: Feedback Received -> User: {user_id}, Query: {query}, Helpful: {is_helpful}"
+    # )
+    # return {
+    #    "status": "success",
+    #    "message": "التيست اشتغل يا جيهاد! الداتا وصلت للـ Terminal.",
+    # }
+    # return {"status": "success", "message": "شكراً لتقييمك! بنتعلم من ملاحظاتك."}
+
+    except Exception as e:
+        print(f"Feedback Error: {e}")
+        # حتى لو التقييم فشل مش عايزين نضرب Error لليوزر، نعديها عادي
+        return {"status": "error", "message": "حصلت مشكلة بسيطة وإحنا بنسجل تقييمك."}
+
+
+@app.post("/request-booking")
+async def request_booking(
+    user_id: str = Form(...),
+    mechanic_id: str = Form(...),
+    slot_id: str = Form(...),  # معرف الميعاد اللي اليوزر اختاره
+):
+    """اليوزر بيطلب حجز ميعاد، وبنغير حالته عشان الميكانيكي يشوفه في لوحة التحكم بتاعته"""
+    try:
+        conn = pymssql.connect(...)  # بيانات الربط
+        cursor = conn.cursor()
+
+        # 1. تحديث حالة الميعاد لـ 'Reserved' وربطه باليوزر
+        query = """
+            UPDATE dbo.MechanicSchedules 
+            SET IsBooked = 1, CustomerId = %s, Status = 'Pending'
+            WHERE Id = %s AND IsBooked = 0
+        """
+        cursor.execute(query, (user_id, slot_id))
+
+        if cursor.rowcount == 0:
+            return {"status": "error", "message": "عذراً، الميعاد ده تم حجزه للتو!"}
+
+        conn.commit()
+        conn.close()
+
+        # هنا "نظرياً" بنبعت Notification (ممكن نطبعها في اللوج دلوقتي)
+        print(
+            f"🔔 Notification: ميكانيكي رقم {mechanic_id} جالك طلب حجز جديد من يوزر {user_id}"
+        )
+
+        return {
+            "status": "success",
+            "message": "تم إرسال طلبك للميكانيكي، سيتم الرد عليك بإشعار قريباً.",
+        }
+
+    except Exception as e:
+        return {"status": "error", "message": "فشل إرسال الطلب، حاول مرة أخرى."}
