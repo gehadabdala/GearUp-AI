@@ -17,17 +17,20 @@ from app.models import (
 
 app = FastAPI(title="GearUp Recommendation System")
 
-# ==========================================
-# تهيئة المتغيرات العالمية
-# ==========================================
-db = None
-ai = None
+# =====================================================================
+# [ 1. تهيئة المتغيرات العالمية (Global Variables) ]
+# =====================================================================
+db = None  # مرجع لقاعدة بيانات الـ Vector (ChromaDB)
+ai = None  # مرجع لخدمة الذكاء الاصطناعي (Gemini)
 approval_service = ApprovalService()
 
 
 def safe_db_call(func):
-    """دالة حماية عشان الكود ميفصلش لو الداتابيز وقعت"""
-
+    """
+    (Decorator) دالة حماية غلافية:
+    الهدف منها إن لو حصل أي مشكلة أو فصل في الـ SQL Server،
+    الكود مايضربش 500 Internal Error، وبدل كده يرجع None والـ AI يكمل شغله عادي.
+    """
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
         try:
@@ -39,12 +42,16 @@ def safe_db_call(func):
     return wrapper
 
 
-# ==========================================
-# دوال قاعدة البيانات (Database Helpers)
-# ==========================================
+# =====================================================================
+# [ 2. دوال التفاعل مع قاعدة البيانات (Database Helpers) ]
+# =====================================================================
 @safe_db_call
 def get_mechanics_from_db(specialty: str, sub_specialty: str):
-    """دالة للبحث عن الميكانيكية مع إعطاء الأولوية للتخصص الدقيق (الأدق)"""
+    """
+    جلب أفضل 3 فنيين متاحين بناءً على التخصص.
+    المنطق (Logic): يتم إعطاء أولوية (Rank 1) للمتخصص في العطل الدقيق (مثلاً فرامل)،
+    ثم (Rank 2) للمتخصص العام (عفشة).
+    """
     conn = pymssql.connect(
         server=settings.DB_SERVER,
         user=settings.DB_USER,
@@ -54,27 +61,27 @@ def get_mechanics_from_db(specialty: str, sub_specialty: str):
     cursor = conn.cursor(as_dict=True)
 
     query = f"""
-            SELECT DISTINCT TOP 3 
-                u.Id AS MechanicId,
-                u.FirstName + ' ' + u.LastName AS Name, 
-                u.Phone, 
-                mp.Location_Latitude AS Latitude,
-                mp.Location_Longitude AS Longitude,
-                -- 👈 ضفنا الـ رتبة هنا عشان الـ DISTINCT يسمح بالترتيب
-                CASE 
-                    WHEN ss.Name LIKE N'%{sub_specialty}%' THEN 1 
-                    WHEN s.Name LIKE N'%{specialty}%' THEN 2    
-                    ELSE 3 
-                END AS Rank
-            FROM dbo.Users u
-            INNER JOIN dbo.MechanicProfile mp ON u.Id = mp.UserId
-            INNER JOIN dbo.Specializations s ON mp.Id = s.MechanicProfileId
-            LEFT JOIN dbo.SubSpecializations ss ON s.Id = ss.SpecializationId
-            WHERE 
-                mp.IsAvailable = 1 
-                AND (s.Name LIKE N'%{specialty}%' OR ss.Name LIKE N'%{sub_specialty}%')
-            ORDER BY Rank -- 👈 بنرتب بالاسم المستعار اللي عرفناه فوق
-        """
+                SELECT DISTINCT TOP 3 
+                    u.Id AS MechanicId,
+                    u.FirstName + ' ' + u.LastName AS Name, 
+                    u.Phone, 
+                    mp.Location_Latitude AS Latitude,
+                    mp.Location_Longitude AS Longitude,
+                    -- نظام التقييم لترتيب الفنيين الأنسب أولاً
+                    CASE 
+                        WHEN ss.Name LIKE N'%{sub_specialty}%' THEN 1 
+                        WHEN s.Name LIKE N'%{specialty}%' THEN 2    
+                        ELSE 3 
+                    END AS Rank
+                FROM dbo.Users u
+                INNER JOIN dbo.MechanicProfile mp ON u.Id = mp.UserId
+                INNER JOIN dbo.Specializations s ON mp.Id = s.MechanicProfileId
+                LEFT JOIN dbo.SubSpecializations ss ON s.Id = ss.SpecializationId
+                WHERE 
+                    mp.IsAvailable = 1 -- الفني متاح حالياً
+                    AND (s.Name LIKE N'%{specialty}%' OR ss.Name LIKE N'%{sub_specialty}%')
+                ORDER BY Rank 
+            """
     cursor.execute(query)
     mechanics = cursor.fetchall()
     conn.close()
@@ -83,6 +90,10 @@ def get_mechanics_from_db(specialty: str, sub_specialty: str):
 
 @safe_db_call
 def get_user_context_data(user_id: str, car_id: Optional[str] = None):
+    """
+        جلب بيانات المستخدم وسيارته لبناء "سياق شخصي" (Personalized Context) للـ AI.
+        يساعد الـ AI على التحدث مع المستخدم باسمه وذكر موديل سيارته.
+        """
     if not user_id: return None
 
     conn = pymssql.connect(
@@ -116,36 +127,37 @@ def get_user_context_data(user_id: str, car_id: Optional[str] = None):
     return data
 
 
-@safe_db_call
-def get_mechanic_schedule(mechanic_name: str):
-    """دالة لجلب المواعيد المتاحة لميكانيكي محدد بالاسم (محمية)"""
-    conn = pymssql.connect(
-        server=settings.DB_SERVER,
-        user=settings.DB_USER,
-        password=settings.DB_PASSWORD,
-        database=settings.DB_NAME,
-    )
-    cursor = conn.cursor(as_dict=True)
+# @safe_db_call
+# def get_mechanic_schedule(mechanic_name: str):
+#     """دالة لجلب المواعيد المتاحة لميكانيكي محدد بالاسم (محمية)"""
+#     conn = pymssql.connect(
+#         server=settings.DB_SERVER,
+#         user=settings.DB_USER,
+#         password=settings.DB_PASSWORD,
+#         database=settings.DB_NAME,
+#     )
+#     cursor = conn.cursor(as_dict=True)
+#
+#     query = f"""
+#         SELECT AvailableDate, StartTime, EndTime
+#         FROM dbo.MechanicSchedules ms
+#         INNER JOIN dbo.MechanicProfile mp ON ms.MechanicProfileId = mp.Id
+#         INNER JOIN dbo.Users u ON mp.UserId = u.Id
+#         WHERE (u.FirstName + ' ' + u.LastName) LIKE N'%{mechanic_name}%'
+#         AND ms.IsBooked = 0
+#     """
+#     cursor.execute(query)
+#     schedules = cursor.fetchall()
+#     conn.close()
+#     return schedules
 
-    query = f"""
-        SELECT AvailableDate, StartTime, EndTime 
-        FROM dbo.MechanicSchedules ms
-        INNER JOIN dbo.MechanicProfile mp ON ms.MechanicProfileId = mp.Id
-        INNER JOIN dbo.Users u ON mp.UserId = u.Id
-        WHERE (u.FirstName + ' ' + u.LastName) LIKE N'%{mechanic_name}%'
-        AND ms.IsBooked = 0
-    """
-    cursor.execute(query)
-    schedules = cursor.fetchall()
-    conn.close()
-    return schedules
 
-
-# ==========================================
-# أحداث تشغيل السيرفر (Startup Events)
-# ==========================================
+# =====================================================================
+# [ 3. أحداث بدء التشغيل (Startup Events) ]
+# =====================================================================
 @app.on_event("startup")
 async def startup_event():
+    """تهيئة الـ AI و الـ VectorDB عند تشغيل السيرفر وحقن البيانات (Ingestion)"""
     global db, ai
     from app.database import VectorDB
     from app.ai_service import AIService
@@ -153,16 +165,13 @@ async def startup_event():
     db = VectorDB()
     ai = AIService()
 
-    # تحميل البيانات من الإكسيل
-
-    # db.ingest_excel()
     # تحميل البيانات
     db.ingest_data()
 
 
-# ==========================================
-# مسارات الـ API (Endpoints)
-# ==========================================
+# =====================================================================
+# [ 4. المسار الرئيسي: محرك التوصيات والتشخيص الذكي (Recommendation Engine) ]
+# =====================================================================
 @app.post("/recommend", response_model=RecommendationResponse)
 async def get_recommendation(
     query_data: str = Form(...),
@@ -191,7 +200,7 @@ async def get_recommendation(
             encoded = base64.b64encode(contents).decode("utf-8")
             image_data_url = f"data:{file.content_type};base64,{encoded}"
 
-        # 2. جلب سياق المستخدم (اللي أنتي كنتِ كاتباه بالظبط)
+        # 2. جلب سياق المستخدم
         user_data = get_user_context_data(user_id, car_id)
         user_context = ""
         if user_data:
@@ -201,8 +210,7 @@ async def get_recommendation(
             car_year = user_data.get("Year", "")
             user_context = f"[معلومة سرية: اسم المستخدم {f_name}، سيارته {car_brand} {car_model} موديل {car_year}. استخدم صيغة المذكر/المؤنث الصح واذكر اسم سيارته بلطافة.]"
 
-        # 3. الكلمات المفتاحية (اللي أنتي كنتِ حطاها)
-        # ضفنا كلمات الصيانة لـ car_keywords
+        # 3. الكلمات المفتاحية
         car_keywords = [
             "صوت",
             "خبط",
@@ -228,9 +236,7 @@ async def get_recommendation(
             "تصليح",
             "صيانة",
             "فلتر",
-            "تغيير",
-            "موعد",
-            "جدول"
+            "تغيير"
         ]
 
         greeting_keywords = [
@@ -240,7 +246,6 @@ async def get_recommendation(
             "اهلا",
             "سلام",
             "وظيفتك",
-            # "بتعمل",
             "صباح",
             "مساء",
         ]
@@ -255,7 +260,6 @@ async def get_recommendation(
 
         # 5. منطق التحية والدردشة العامة
         if is_greeting or (not is_car_related and is_far_match):
-            # 👈 عدلنا التعليمات عشان لو سأل عن صيانة يرد بنصيحة مش بتحية بس
             instructions = "أنت GearUp AI، خبير سيارات ودود. إذا كان المستخدم يطلب نصائح صيانة دورية، قدم له نصائح مبسطة وغير معقدة. وإذا كانت مجرد تحية، رد بلباقة وذكره بتخصصك."
             ai_chat_answer = await ai.generate_response(
                 messages, [user_context, instructions], image_data_url
@@ -264,35 +268,6 @@ async def get_recommendation(
                 query=description, ai_answer=ai_chat_answer, source_documents=[], requires_feedback=False
             )
 
-        # === [إضافة جديدة: منطق فحص مواعيد الورش] ===
-        schedule_keywords = ["مواعيد", "وقت", "فاضي", "ساعة", "متاح", "يوم"]
-        asking_for_schedule = any(
-            word in description.lower() for word in schedule_keywords
-        )
-        schedule_text = ""
-
-        if asking_for_schedule:
-            extracted_name = description.lower()
-            for word in schedule_keywords + [
-                "ورشة",
-                "المهندس",
-                "ميكانيكي",
-                "يا",
-                "GearUp",
-            ]:
-                extracted_name = extracted_name.replace(word, "")
-            extracted_name = extracted_name.strip()
-
-            if extracted_name:
-                schedules = get_mechanic_schedule(extracted_name)
-                if schedules:
-                    schedule_text = f"\n📅 المواعيد المتاحة لـ {extracted_name} هي:\n"
-                    for s in schedules:
-                        schedule_text += f"- يوم {s['AvailableDate']} من {s['StartTime']} إلى {s['EndTime']}\n"
-                else:
-                    schedule_text = f"\n(للأسف لم أجد مواعيد مسجلة حالياً لـ {extracted_name} في النظام)."
-        # ============================================
-
         # 6. استخراج بيانات العطل (صعب/متوسط/سهل)
         metadata_list = search_results["metadatas"][0]
         top_case = metadata_list[0]
@@ -300,7 +275,7 @@ async def get_recommendation(
         suggested_part = top_case.get("القطعة المرشحة", "غير محدد")
         suggested_solution = top_case.get("الحل المقترح", "يرجى الفحص")
 
-        # الكلمات الحساسة اللي أنتي حددتيها
+        # الكلمات الحساسة
         serious_words = [
             "فتيس",
             "موتور",
@@ -326,13 +301,23 @@ async def get_recommendation(
             for word in ["ورشة", "ميكانيكي", "فني", "مركز صيانة", "تصليح"]
         )
 
+        advice_keywords = [
+            "نصيحة",
+            "نصائح",
+            "صيانة دورية",
+            "احافظ",
+            "أحافظ",
+            "فحص"
+        ]
+        is_asking_for_advice = any(word in description.lower() for word in advice_keywords)
+
         # 7. جلب الميكانيكية واللوكيشن
         mechanics_text = ""
         extracted_mechanics_list = []
         is_hard_issue = False
 
-        # بنحدد لو العطل "صعب" أو فيه كلمات خطر أو اليوزر طلب ورشة
-        if difficulty == "صعب" or contains_serious_word or user_asking_for_workshop:
+        # هنفعل الطوارئ بشرط إن اليوزر ميكونش بيطلب (نصيحة)
+        if (difficulty == "صعب" or contains_serious_word or user_asking_for_workshop) and not is_asking_for_advice:
             is_hard_issue = True  # هنا بنأكد إنها مشكلة محتاجة ميكانيكي
 
             specialty_json = await ai.extract_specialty(description, suggested_part)
@@ -347,20 +332,27 @@ async def get_recommendation(
                 for m in mechanics_list:
                     lat = m.get('Latitude', 0)
                     lng = m.get('Longitude', 0)
-                    map_link = f"https://www.google.com/maps?q={lat},{lng}"
+                    map_link = f"http://googleusercontent.com/maps.google.com/?q={lat},{lng}"
                     mechanics_text += f"- المهندس: {m.get('Name')} | 📞: {m.get('Phone')} | 📍 اللوكيشن: {map_link}\n"
             else:
                 mechanics_text = "\n\n(للأسف لم أجد فنيين متاحين حالياً، أنصحك بالتوجه لأقرب مركز صيانة معتمد)."
 
         # 8. بناء الرد النهائي وتجهيز التعليمات (Instructions)
-        if asking_for_schedule and schedule_text:
-            instructions = f"اليوزر يسأل عن مواعيد ورشة {extracted_name}. بيانات المواعيد: {schedule_text}. {user_context}. رد عليه بلباقة وأخبره بالمواعيد المتاحة."
+        offers_reminder_flag = False  # متغير افتراضي للتذكير
+        reminder_title = None
+        reminder_desc = None
 
-        elif is_hard_issue:  # 👈 استعملنا المتغير اللي عرفناه فوق بدل ما نعيد الشروط
+        if is_hard_issue:
+            # مسار الطوارئ
             if extracted_mechanics_list:
                 instructions = f"عطل حرج! {user_context}. حذر المستخدم. يجب أن تدرج قائمة الفنيين التالية كما هي بالنص: {mechanics_text}"
             else:
                 instructions = f"عطل حرج! {user_context}. حذر المستخدم. ثم اعتذر له وأخبره بهذا النص حرفياً: {mechanics_text}"
+
+        elif is_asking_for_advice:
+            # مسار النصائح والصيانة الدورية - FR-3
+            instructions = f"{user_context} المستخدم يطلب نصائح صيانة دورية أو استشارة. قدم نصائح مبسطة وودية (غير معقدة فنياً) واستخدم Emojis. في نهاية ردك، اسأله بلباقة: 'هل تحب أظبطلك تذكير بموعد الصيانة الجاية على السيستم؟'"
+            offers_reminder_flag = True  # تفعيل زر التذكير للفرونت إند
 
         elif difficulty == "متوسط":
             instructions = f"{user_context} الحل: {suggested_solution}. التنسيق: ⚠️ ملاحظة هامة (اطمنه)، ⚙️ إيه المشكلة والحل؟، 👨‍🔧 نصيحة الخبير."
@@ -368,28 +360,48 @@ async def get_recommendation(
         else:
             instructions = f"{user_context} الحل: {suggested_solution}. التنسيق: ✅ لا تقلق الموضوع بسيط، 🛠️ خطوات الحل (استخدم إيموجي لكل خطوة)."
 
+        # --- [ تنفيذ الذكاء الاصطناعي وتجهيز المخرجات (AI Execution & Output Preparation) ] ---
+        # 1. توليد الرد النهائي بناءً على التعليمات المحددة في أي من المسارات السابقة
         ai_final_answer = await ai.generate_response(messages, [instructions], image_data_url)
 
-        # 9. الـ Return النهائي (كل القيم دلوقتى مضمونة)
+        # 2. استخراج بيانات التذكير من نص الـ AI (يُنفذ فقط في مسار طلب النصائح والصيانة)
+        if offers_reminder_flag:
+            reminder_data = await ai.extract_reminder_details(ai_final_answer)
+            reminder_title = reminder_data.get("title", "تذكير صيانة")
+            reminder_desc = reminder_data.get("description", description)
+
+        # 9. إرجاع النتيجة النهائية للواجهة الأمامية (Final Return Contract)
         return RecommendationResponse(
             query=description,
             ai_answer=ai_final_answer,
-            source_documents=[top_case],
+            source_documents=[top_case] if top_case else [],
             requires_feedback=True,
             requires_mechanic=is_hard_issue,
-            recommended_mechanics=extracted_mechanics_list
+            offers_reminder=offers_reminder_flag,
+            recommended_mechanics=extracted_mechanics_list,
+            car_id=car_id,
+            issue_summary=description,
+            suggested_reminder_title=reminder_title,  # العنوان المستخرج للاستخدام في الـ Auto-fill
+            suggested_reminder_desc=reminder_desc  # الوصف المستخرج للاستخدام في الـ Auto-fill
         )
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# =====================================================================
+# [ 5. مسار التحقق من المستندات (OCR & Document Verification) ]
+# =====================================================================
 @app.post("/approve-mechanic")
 async def approve_mechanic(
     mechanic_id: str = Form(...),
     doc_type: str = Form(...),
     file: UploadFile = File(...),
 ):
+    """
+        دالة للتحقق من أوراق ومستندات الفنيين (مثل: البطاقة الشخصية، رخصة الورشة).
+        تستقبل صورة المستند، وتحولها لصيغة Base64، ثم ترسلها لخدمة الـ AI (Gemini Vision).
+    """
     contents = await file.read()
     encoded = base64.b64encode(contents).decode("utf-8")
     image_data_url = f"data:{file.content_type};base64,{encoded}"
@@ -400,9 +412,9 @@ async def approve_mechanic(
     return result
 
 
-# ==========================================
-# 9. نظام تقييم الردود (Feedback System)
-# ==========================================
+# =====================================================================
+# [ 6. نظام تقييم الردود (Feedback System) ]
+# =====================================================================
 @app.post("/feedback")
 async def submit_feedback(
     user_id: str = Form(...),
@@ -445,50 +457,3 @@ async def submit_feedback(
         print(f"Feedback Error: {e}")
         # حتى لو التقييم فشل مش عايزين نضرب Error لليوزر، نعديها عادي
         return {"status": "error", "message": "حصلت مشكلة بسيطة وإحنا بنسجل تقييمك."}
-
-
-# ==========================================
-# 10. نظام طلب فني للتدخل السريع (Request a Mechanic)
-# ==========================================
-@app.post("/request-mechanic")
-async def request_mechanic(
-        user_id: str = Form(...),
-        mechanic_id: str = Form(...),
-        car_id: Optional[str] = Form(None),
-        issue_description: Optional[str] = Form("طلب تدخل فني لعطل حرج")
-):
-    """اليوزر بيطلب ميكانيكي يجيله فوراً لأن العطل تصنيفه (صعب) ولا يمكن حله يدوياً"""
-    try:
-        conn = pymssql.connect(
-            server=settings.DB_SERVER,
-            user=settings.DB_USER,
-            password=settings.DB_PASSWORD,
-            database=settings.DB_NAME
-        )
-        cursor = conn.cursor()
-
-        # إدخال طلب خدمة فوري في جدول ServiceRequests
-        query = """
-            INSERT INTO dbo.ServiceRequests (CustomerId, MechanicId, CarId, Description, Status, CreatedAt)
-            VALUES (%s, %s, %s, %s, 'Pending', GETDATE())
-        """
-        # بنمرر البيانات للكوري عشان تتسجل في الداتا بيز
-        cursor.execute(query, (user_id, mechanic_id, car_id, issue_description))
-
-        conn.commit()
-        conn.close()
-
-        # إشعار وهمي في اللوج عشان تبقي عارفة إن الريكويست وصل
-        print(f"🚨 URGENT Notification: ميكانيكي {mechanic_id} جالك طلب تدخل سريع من يوزر {user_id}")
-
-        return {
-            "status": "success",
-            "message": "تم إرسال طلب التدخل بنجاح! الفني هيتواصل معاك فوراً."
-        }
-
-    except Exception as e:
-        print(f"Mechanic Request Error: {e}")
-        return {
-            "status": "error",
-            "message": "فشل إرسال الطلب، تأكد من اتصالك بالإنترنت أو حاول مرة أخرى."
-        }

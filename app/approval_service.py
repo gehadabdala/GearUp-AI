@@ -2,7 +2,17 @@ from ast import pattern
 import re
 from app.ai_service import AIService
 
+
+# =====================================================================
+# [ خدمة التحقق من المستندات (Document Approval & OCR Service) ]
+# =====================================================================
 class ApprovalService:
+    """
+        الخدمة المسؤولة عن فحص وتوثيق أوراق الفنيين المرفوعة (البطاقة، السجل التجاري، إلخ).
+        تعتمد على تقنية الرؤية البصرية (Vision) لاستخراج النصوص، ومطابقتها مع
+        أنماط قياسية (Regex) لضمان صحة البيانات المصرية.
+    """
+
     def __init__(self):
         self.ai = AIService()
         # أنماط الوثائق المصرية الشائعة
@@ -13,6 +23,12 @@ class ApprovalService:
         }
 
     async def verify_document(self, doc_type: str,image_data: str):
+        """
+                استقبال صورة المستند، قراءتها بالذكاء الاصطناعي، ثم التحقق من مطابقة الرقم للنمط الصحيح.
+        """
+
+        # --- 1. استخراج النص بالذكاء الاصطناعي (OCR Extraction) ---
+        # توجيه الـ AI لاستخراج الرقم فقط بدون أي نصوص إضافية لتسهيل المطابقة
         prompt = f"استخرج رقم الـ {doc_type} من هذه الصورة. رد بالرقم فقط."
         try:
         
@@ -23,7 +39,8 @@ class ApprovalService:
         except Exception as e:
             print(f"DEBUG: Error in AI OCR: {e}")
             return {"status": "Rejected", "message": "فشل قراءة الوثيقة، يرجى رفع صورة أوضح."}
-        
+
+        # --- 2. التحقق من صحة الصيغة (Regex Validation) ---
         pattern = self.patterns.get(doc_type)
         is_pattern_valid = False
         clean_id = ""
@@ -35,7 +52,7 @@ class ApprovalService:
                 clean_id = match.group()
                 is_pattern_valid = True
 
-        # 3. القرار النهائي
+        # --- 3. اتخاذ القرار النهائي (Final Decision) ---
         if is_pattern_valid:
             return {
                 "status": "Approved",

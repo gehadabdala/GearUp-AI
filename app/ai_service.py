@@ -4,6 +4,9 @@ from openai import OpenAI
 from app.config import settings
 
 
+# =====================================================================
+# [ 1. خدمة الذكاء الاصطناعي (AI Service Core) ]
+# =====================================================================
 class AIService:
     """
     خدمة الذكاء الاصطناعي المسؤولة عن التواصل مع نماذج اللغة
@@ -20,47 +23,47 @@ class AIService:
             api_key=settings.OPENROUTER_API_KEY,
         )
 
+
+    # =====================================================================
+    # [ 2. محرك الدردشة والتشخيص (Chat & Diagnostics Engine) ]
+    # =====================================================================
     async def generate_response(
         self, chat_hist: list, context_docs: list = None, image_data_url: str = None
     ) -> str:
         """
         توليد رد الذكاء الاصطناعي بناءً على تاريخ المحادثة، السياق، والصور المرفقة.
         """
-        # تحويل المعلومات الفنية لنص مفهوم
+        # 1. تحويل المعلومات الفنية (السياق) لنص مفهوم للـ AI
         context_text = (
             "\n".join(context_docs)
             if context_docs
             else "لا توجد معلومات فنية محددة في قاعدة البيانات حالياً، استخدم خبرتك العامة."
         )
 
-        # البرومبت الأساسي: ذكي، مرن، وميكانيكي خبير
+        # 2. هندسة الأوامر (Prompt Engineering): تحديد شخصية وقواعد الـ AI
         system_prompt = f"""
-        أنت GearUp AI، مساعد ميكانيكي محترف، ذكي، وودود.
-        نطاقك الأساسي هو السيارات وصيانتها فقط.
+                أنت GearUp AI، مساعد ميكانيكي محترف، ذكي، وودود.
+                نطاقك الأساسي هو السيارات وصيانتها فقط.
 
-        قواعد الرد:
-        1. إذا حياك المستخدم (سلام، أهلاً)، رد بترحيب حار بأسلوب خبير سيارات.
-        2. إذا كانت الصورة أو النص لا يتعلقان بالسيارات، اعتذر بلباقة موضحاً تخصصك.
-        3. عند تحليل عطل (بناءً على المعلومات المتاحة):
-           - استخدم المعلومات الفنية والسياق المتاح: {context_text}
-           - نسق ردك بـ Markdown ليحتوي على:
-             **🔍 التشخيص المحتمل**
-             **📊 مستوى التأكد**
-             **⚠️ درجة الخطورة**
-             **🛠️ خطوات الإصلاح المقترحة**
-        4. إذا وجدت صورة مرفقة، ابدأ ردك بتحليل ما تراه فيها تقنياً وبدقة.
-        5. في الأعطال الحرجة (محرك، فرامل)، كن حذراً جداً وانصح بالفني المتخصص.
-        """
+                قواعد الرد:
+                1. إذا حياك المستخدم (سلام، أهلاً)، رد بترحيب حار بأسلوب خبير سيارات.
+                2. إذا كانت الصورة أو النص لا يتعلقان بالسيارات، اعتذر بلباقة موضحاً تخصصك.
+                3. استخدم المعلومات الفنية والسياق المتاح لدعم إجابتك: {context_text}
+                4. التزم "بالتنسيق والتعليمات" الموجهة إليك في نهاية الرسالة بدقة (سواء كان المطلوب تشخيص عطل معقد أو مجرد نصيحة ودية).
+                5. في الأعطال الحرجة (محرك، فرامل)، كن حذراً جداً وانصح بالفني المتخصص.
+                """
 
+        # 3. بناء مصفوفة الرسائل (Messages Payload)
         formatted_messages = [{"role": "system", "content": system_prompt}]
 
-        # إضافة تاريخ المحادثة
+        # إضافة الهيستوري الخاص بالمستخدم
         for msg in chat_hist:
             formatted_messages.append({"role": msg.role, "content": msg.content})
 
-        # معالجة الصورة إذا وجدت وإضافتها لآخر رسالة مستخدم
+        # 4. معالجة الرؤية البصرية (Vision): دمج الصورة مع آخر رسالة للمستخدم
         if image_data_url:
             last_msg_index = -1
+            # البحث عن آخر رسالة من المستخدم (من الخلف للأمام)
             for i in range(len(formatted_messages) - 1, -1, -1):
                 if formatted_messages[i]["role"] == "user":
                     last_msg_index = i
@@ -68,12 +71,14 @@ class AIService:
 
             if last_msg_index != -1:
                 last_msg_content = formatted_messages[last_msg_index]["content"]
+                # تعديل الهيكل ليقبل نص + صورة معاً
                 formatted_messages[last_msg_index]["content"] = [
                     {"type": "text", "text": last_msg_content},
                     {"type": "image_url", "image_url": {"url": image_data_url}},
                 ]
 
         try:
+            # 5. إرسال الطلب (Temperature 0.5 للإبداع المتزن في الشات)
             response = self.client.chat.completions.create(
                 model=self.DEFAULT_MODEL,
                 messages=formatted_messages,
@@ -81,9 +86,13 @@ class AIService:
             )
             return response.choices[0].message.content
         except Exception as e:
-            print(f"[AI Generate Error]: {e}")
-            return f"عذراً يا جيهاد، واجهت مشكلة تقنية: {str(e)}"
+            print(f"❌ [AI Generate Error]: {e}")
+            return "عذراً، واجهت مشكلة تقنية في الخادم. يرجى المحاولة مرة أخرى لاحقاً."
 
+
+    # =====================================================================
+    # [ 3. محرك قراءة المستندات (Vision & OCR) ]
+    # =====================================================================
     async def get_ocr_text(self, prompt: str, image_data_url: str) -> str:
         """
         قراءة النصوص من الصور (مثل الرخص والبطاقات) باستخدام الذكاء الاصطناعي.
@@ -100,17 +109,23 @@ class AIService:
                         ],
                     }
                 ],
-                temperature=0.1,
+                temperature=0.1, # نستخدم Temperature 0.1 لضمان الدقة العالية وعدم التأليف (Hallucination) في قراءة الأرقام
             )
             return response.choices[0].message.content
         except Exception as e:
             print(f"[OCR Error]: {e}")
             return f"خطأ في قراءة الصورة: {str(e)}"
 
+
+    # =====================================================================
+    # [ 4. محرك استخراج البيانات المهيكلة (Structured Data Extraction) ]
+    # =====================================================================
     async def extract_specialty(self, description: str, suggested_part: str) -> dict:
         """
-        تحليل وصف المشكلة لاستخراج التخصص والتخصص الدقيق بصيغة JSON.
+        تحليل وصف المشكلة واستخراج (التخصص) و (التخصص الدقيق) بصيغة JSON.
+        يُستخدم هذا لربط العطل بأفضل فني مناسب في قاعدة البيانات.
         """
+
         available_specialties = """
         - ميكانيكا (موتور، فتيس، دورة تبريد)
         - عفشة (فرامل، مساعدين، دركسيون)
@@ -118,22 +133,24 @@ class AIService:
         - تكييف (كمبروسر، شحن فريون)
         """
 
+        # إجبار الـ AI على إرجاع JSON خام بدون أي تنسيقات Markdown
         system_prompt = "You are a data extraction API. Output ONLY raw JSON format. No markdown formatting, no explanations."
 
         user_prompt = f"""
-        صنف المشكلة التالية إلى تخصص وتخصص دقيق بناءً على القائمة المتاحة فقط.
+                صنف المشكلة التالية إلى تخصص وتخصص دقيق بناءً على القائمة المتاحة فقط.
 
-        المشكلة: {description}
-        القطعة المرتبطة: {suggested_part}
+                المشكلة: {description}
+                القطعة المرتبطة: {suggested_part}
 
-        القائمة المتاحة:
-        {available_specialties}
+                القائمة المتاحة:
+                {available_specialties}
 
-        يجب أن ترد بصيغة JSON فقط بهذا الشكل الدقيق:
-        {{"specialty": "اسم التخصص هنا", "sub_specialty": "اسم التخصص الدقيق هنا"}}
-        """
+                يجب أن ترد بصيغة JSON فقط بهذا الشكل الدقيق:
+                {{"specialty": "اسم التخصص هنا", "sub_specialty": "اسم التخصص الدقيق هنا"}}
+                """
 
         try:
+            # نستخدم Temperature 0.0 لضمان خروج الـ JSON بنفس الهيكل دائماً
             response = self.client.chat.completions.create(
                 model=self.DEFAULT_MODEL,
                 messages=[
@@ -144,11 +161,54 @@ class AIService:
             )
 
             result_text = response.choices[0].message.content
-            clean_json_text = (
-                result_text.replace("```json", "").replace("```", "").strip()
-            )
+            # تنظيف الرد من أي علامات Markdown قد يضيفها الموديل بالغلط
+            clean_json_text = result_text.replace("```json", "").replace("```", "").strip()
+
             return json.loads(clean_json_text)
 
         except Exception as e:
-            print(f"[Specialty Extraction Error]: {e}")
+            print(f"❌ [Specialty Extraction Error]: {e}")
+            # Fallback (قيمة احتياطية) في حالة فشل التحليل حتى لا يتوقف النظام
             return {"specialty": "ميكانيكا", "sub_specialty": "موتور"}
+
+
+    # =====================================================================
+    # [ 5. محرك استخراج بيانات التذكير (Reminder Data Extraction) ]
+    # =====================================================================
+    async def extract_reminder_details(self, advice_text: str) -> dict:
+        """
+        قراءة نصيحة الصيانة التي ولدها الـ AI، واستخراج عنوان ووصف دقيق
+        ليتم استخدامه في جدولة التذكيرات (Scheduled Reminders).
+        """
+        system_prompt = "You are a data extraction API. Output ONLY raw JSON format. No markdown formatting, no explanations."
+
+        user_prompt = f"""
+        بناءً على نصيحة الصيانة التالية التي قدمتها للتو للمستخدم، استخرج "عنوان قصير" للتذكير، و"وصف مختصر" له.
+
+        النصيحة:
+        {advice_text}
+
+        يجب أن ترد بصيغة JSON فقط بهذا الشكل الدقيق:
+        {{"title": "عنوان التذكير (مثال: فحص وتغيير زيت الموتور)", "description": "وصف التذكير (مثال: موعد فحص لزوجة الزيت وتغيير الفلتر حسب النصيحة)"}}
+        """
+
+        try:
+            # نستخدم Temperature 0.0 لضمان دقة الهيكل (JSON)
+            response = self.client.chat.completions.create(
+                model=self.DEFAULT_MODEL,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.0,
+            )
+
+            result_text = response.choices[0].message.content
+            clean_json_text = result_text.replace("```json", "").replace("```", "").strip()
+
+            return json.loads(clean_json_text)
+
+        except Exception as e:
+            print(f"❌ [Reminder Extraction Error]: {e}")
+            # Fallback في حالة الفشل
+            return {"title": "تذكير صيانة دورية", "description": "موعد الفحص والصيانة الدورية للسيارة"}
