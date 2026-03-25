@@ -1,0 +1,1 @@
+SELECT * FROM dbo.AI_Feedback ORDER BY CreatedAt DESC;

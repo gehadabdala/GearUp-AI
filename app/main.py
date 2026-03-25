@@ -33,6 +33,7 @@ def safe_db_call(func):
     الهدف منها إن لو حصل أي مشكلة أو فصل في الـ SQL Server،
     الكود مايضربش 500 Internal Error، وبدل كده يرجع None والـ AI يكمل شغله عادي.
     """
+
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
         try:
@@ -93,14 +94,17 @@ def get_mechanics_from_db(specialty: str, sub_specialty: str):
 @safe_db_call
 def get_user_context_data(user_id: str, car_id: Optional[str] = None):
     """
-        جلب بيانات المستخدم وسيارته لبناء "سياق شخصي" (Personalized Context) للـ AI.
-        يساعد الـ AI على التحدث مع المستخدم باسمه وذكر موديل سيارته.
-        """
-    if not user_id: return None
+    جلب بيانات المستخدم وسيارته لبناء "سياق شخصي" (Personalized Context) للـ AI.
+    يساعد الـ AI على التحدث مع المستخدم باسمه وذكر موديل سيارته.
+    """
+    if not user_id:
+        return None
 
     conn = pymssql.connect(
-        server=settings.DB_SERVER, user=settings.DB_USER,
-        password=settings.DB_PASSWORD, database=settings.DB_NAME,
+        server=settings.DB_SERVER,
+        user=settings.DB_USER,
+        password=settings.DB_PASSWORD,
+        database=settings.DB_NAME,
     )
     cursor = conn.cursor(as_dict=True)
 
@@ -189,16 +193,16 @@ async def get_recommendation(
 
         image_data_url = None
         if file:
-            # 1. التحقق من صيغة الصورة (يُسمح فقط بـ JPG و PNG)
             if file.content_type not in ["image/jpeg", "image/png"]:
-                raise HTTPException(status_code=400, detail="يُسمح فقط بصيغ JPG و PNG للمرفقات.")
-
+                raise HTTPException(
+                    status_code=400, detail="يُسمح فقط بصيغ JPG و PNG للمرفقات."
+                )
             contents = await file.read()
-
-            # 2. التحقق من حجم الصورة (الحد الأقصى 5 ميجابايت)
             if len(contents) > 5 * 1024 * 1024:
-                raise HTTPException(status_code=400, detail="حجم الصورة يتجاوز الحد المسموح (5 ميجابايت).")
-
+                raise HTTPException(
+                    status_code=400,
+                    detail="حجم الصورة يتجاوز الحد المسموح (5 ميجابايت).",
+                )
             encoded = base64.b64encode(contents).decode("utf-8")
             image_data_url = f"data:{file.content_type};base64,{encoded}"
 
@@ -212,7 +216,10 @@ async def get_recommendation(
             car_year = user_data.get("Year", "")
             user_context = f"[معلومة سرية: اسم المستخدم {f_name}، سيارته {car_brand} {car_model} موديل {car_year}. استخدم صيغة المذكر/المؤنث الصح واذكر اسم سيارته بلطافة.]"
 
-        # 3. الكلمات المفتاحية
+        # 3. الكلمات المفتاحية وتنظيف النص
+        # بنشيل الهمزات والمسافات الزيادة عشان نضمن الـ Matching يلقط "أغير" و "امتى"
+        clean_desc = description.lower().replace("أ", "ا").replace("إ", "ا").strip()
+
         car_keywords = [
             "صوت",
             "خبط",
@@ -220,6 +227,7 @@ async def get_recommendation(
             "دواسة",
             "فتيس",
             "موتور",
+            "محرك",
             "فرامل",
             "عجلة",
             "كاوتش",
@@ -238,9 +246,8 @@ async def get_recommendation(
             "تصليح",
             "صيانة",
             "فلتر",
-            "تغيير"
+            "تغيير",
         ]
-
         greeting_keywords = [
             "مين",
             "عرفني",
@@ -251,11 +258,25 @@ async def get_recommendation(
             "صباح",
             "مساء",
         ]
+        advice_keywords = [
+            "اغير",
+            "امتى",
+            "متى",
+            "موعد",
+            "مواعيد",
+            "نصيحه",
+            "صيانه",
+            "جدول",
+            "كل قد ايه",
+            "كل كام",
+            "احافظ",
+        ]
 
-        is_car_related = any(word in description.lower() for word in car_keywords)
-        is_greeting = any(word in description.lower() for word in greeting_keywords)
+        is_car_related = any(word in clean_desc for word in car_keywords)
+        is_greeting = any(word in clean_desc for word in greeting_keywords)
+        is_asking_for_advice = any(word in clean_desc for word in advice_keywords)
 
-        # 4. البحث في قاعدة البيانات
+        # 4. البحث في قاعدة البيانات (RAG)
         search_results = db.search(description, n_results=1)
         distances = search_results.get("distances", [[]])[0]
         is_far_match = not distances or distances[0] > 0.3
@@ -267,17 +288,19 @@ async def get_recommendation(
                 messages, [user_context, instructions], image_data_url
             )
             return RecommendationResponse(
-                query=description, ai_answer=ai_chat_answer, source_documents=[], requires_feedback=False
+                query=description,
+                ai_answer=ai_chat_answer,
+                source_documents=[],
+                requires_feedback=False,
             )
 
-        # 6. استخراج بيانات العطل (صعب/متوسط/سهل)
+        # 6. استخراج بيانات العطل والكلمات الحساسة
         metadata_list = search_results["metadatas"][0]
         top_case = metadata_list[0]
         difficulty = str(top_case.get("مستوى الصعوبة", "سهل")).strip()
         suggested_part = top_case.get("القطعة المرشحة", "غير محدد")
         suggested_solution = top_case.get("الحل المقترح", "يرجى الفحص")
 
-        # الكلمات الحساسة
         serious_words = [
             "فتيس",
             "موتور",
@@ -293,133 +316,135 @@ async def get_recommendation(
             "دينامو",
             "مارش",
             "كهرباء",
-            "ضفيرة"
+            "ضفيرة",
         ]
-        contains_serious_word = any(
-            word in description.lower() for word in serious_words
-        )
+        contains_serious_word = any(word in clean_desc for word in serious_words)
         user_asking_for_workshop = any(
-            word in description.lower()
+            word in clean_desc
             for word in ["ورشة", "ميكانيكي", "فني", "مركز صيانة", "تصليح"]
         )
 
-        advice_keywords = [
-            "نصيحة",
-            "نصائح",
-            "صيانة دورية",
-            "احافظ",
-            "أحافظ",
-            "فحص"
-        ]
-        is_asking_for_advice = any(word in description.lower() for word in advice_keywords)
-
-        # 7. جلب الميكانيكية واللوكيشن
+        # 7. جلب الميكانيكية (للمسار الطارئ فقط)
         mechanics_text = ""
         extracted_mechanics_list = []
-        is_hard_issue = False
+        specialty_json = await ai.extract_specialty(description, suggested_part)
+        mechanics_list = get_mechanics_from_db(
+            specialty_json.get("specialty", "ميكانيكا"),
+            specialty_json.get("sub_specialty", ""),
+        )
 
-        # هنفعل الطوارئ بشرط إن اليوزر ميكونش بيطلب (نصيحة)
-        if (difficulty == "صعب" or contains_serious_word or user_asking_for_workshop) and not is_asking_for_advice:
-            is_hard_issue = True  # هنا بنأكد إنها مشكلة محتاجة ميكانيكي
-
-            specialty_json = await ai.extract_specialty(description, suggested_part)
-            mechanics_list = get_mechanics_from_db(
-                specialty_json.get("specialty", "ميكانيكا"),
-                specialty_json.get("sub_specialty", ""),
-            )
-
-            if mechanics_list:
-                extracted_mechanics_list = mechanics_list
-                mechanics_text = "\n\nإليك الفنيين المتاحين حالياً في نظامنا:\n"
-                for m in mechanics_list:
-                    lat = m.get('Latitude', 0)
-                    lng = m.get('Longitude', 0)
-                    map_link = f"http://googleusercontent.com/maps.google.com/?q={lat},{lng}"
+        if mechanics_list:
+            extracted_mechanics_list = mechanics_list
+            mechanics_text = "\n\nإليك الفنيين المتاحين حالياً في نظامنا:\n"
+            seen_mechanics = set()
+            for m in mechanics_list:
+                m_id = m.get("MechanicId")
+                if m_id not in seen_mechanics:
+                    lat, lng = m.get("Latitude", 0), m.get("Longitude", 0)
+                    map_link = (
+                        f"http://googleusercontent.com/maps.google.com/?q={lat},{lng}"
+                    )
                     mechanics_text += f"- المهندس: {m.get('Name')} | 📞: {m.get('Phone')} | 📍 اللوكيشن: {map_link}\n"
-            else:
-                mechanics_text = "\n\n(للأسف لم أجد فنيين متاحين حالياً، أنصحك بالتوجه لأقرب مركز صيانة معتمد)."
+                    seen_mechanics.add(m_id)
 
-        # 8. بناء الرد النهائي وتجهيز التعليمات (Instructions)
+        # 8. بناء الرد النهائي وتحديد المسار (الأولوية للنصيحة)
         offers_reminder_flag = False
+        is_hard_issue = False
+        instructions = ""
 
-        # متغيرات الملء التلقائي الافتراضية للفورم
-        auto_fill_service_type = None
-        auto_fill_required_service = None
-        auto_fill_location_type = None
+        # متغيرات الملء التلقائي
+        auto_fill_service_type, auto_fill_required_service, auto_fill_location_type = (
+            None,
+            None,
+            None,
+        )
         auto_fill_use_gps = False
-        auto_fill_has_attachment = True if file else False  # لو اليوزر رافع صورة نخليها True
+        auto_fill_has_attachment = True if file else False
 
-        suggested_frequency = None
-        suggested_date = None
-        reminder_title = None
-        reminder_desc = None
+        # --- ترتيب الشروط (التكة اللي بتصلح الـ JSON) ---
+        if is_asking_for_advice:
+            # مسار النصائح - له الأولوية القصوى
+            instructions = f"{user_context} المستخدم يطلب نصائح صيانة دورية أو استشارة. قدم نصائح مبسطة وودية. في النهاية، اعرض عليه إنشاء تذكير صيانة صراحةً. لا تذكر أي ميكانيكيين في هذا الرد."
+            offers_reminder_flag = True
+            is_hard_issue = False
 
-        if is_hard_issue:
-            # مسار الطوارئ (تجهيز بيانات الفورم)
+        elif difficulty == "صعب" or contains_serious_word or user_asking_for_workshop:
+            # مسار الطوارئ
+            is_hard_issue = True
+            offers_reminder_flag = False
             auto_fill_service_type = "خدمة طارئة"
             auto_fill_required_service = "تشخيص"
             auto_fill_location_type = "ميكانيكي متنقل"
-            auto_fill_use_gps = True  # ندي أوردر للفرونت إند يقرأ اللوكيشن بتاع الموبايل
-
-            if extracted_mechanics_list:
-                instructions = f"عطل حرج! {user_context}. حذر المستخدم. يجب أن تدرج قائمة الفنيين التالية كما هي بالنص: {mechanics_text}"
-            else:
-                instructions = f"عطل حرج! {user_context}. حذر المستخدم. ثم اعتذر له وأخبره بهذا النص حرفياً: {mechanics_text}"
-
-
-        elif is_asking_for_advice:
-            # مسار النصائح
-            instructions = f"{user_context} المستخدم يطلب نصائح صيانة دورية أو استشارة. قدم نصائح مبسطة وودية. في النهاية، اعرض عليه إنشاء تذكير صيانة صراحةً، لتفعيل الزر الخاص بذلك في الواجهة."
-            offers_reminder_flag = True
+            auto_fill_use_gps = True
+            instructions = f"أنت خبير طوارئ في تطبيق GearUp. {user_context}. المشكلة خطيرة! حذر المستخدم باختصار، ثم قدم نصيحة سريعة، واذكر قائمة الفنيين: {mechanics_text}"
 
         elif difficulty == "متوسط":
-            instructions = f"{user_context} الحل: {suggested_solution}. التنسيق: ⚠️ ملاحظة هامة (اطمنه)، ⚙️ إيه المشكلة والحل؟، 👨‍🔧 نصيحة الخبير."
-
+            instructions = f"{user_context} الحل: {suggested_solution}. التنسيق: ⚠️ ملاحظة هامة، ⚙️ إيه المشكلة والحل؟، 👨‍🔧 نصيحة الخبير."
         else:
-            instructions = f"{user_context} الحل: {suggested_solution}. التنسيق: ✅ لا تقلق الموضوع بسيط، 🛠️ خطوات الحل (استخدم إيموجي لكل خطوة)."
+            instructions = f"{user_context} الحل: {suggested_solution}. التنسيق: ✅ لا تقلق الموضوع بسيط، 🛠️ خطوات الحل."
 
-        # --- [ تنفيذ الذكاء الاصطناعي وتجهيز المخرجات ] ---
-        ai_final_answer = await ai.generate_response(messages, [instructions], image_data_url)
+        # 9. تنفيذ الذكاء الاصطناعي وتوليد التذكير
+        ai_final_answer = await ai.generate_response(
+            messages, [instructions], image_data_url
+        )
+
+        (
+            reminder_title,
+            reminder_desc,
+            suggested_frequency,
+            suggested_date,
+            suggested_end_date,
+            notification_time,
+        ) = [None] * 6
 
         if offers_reminder_flag:
-            # هنخلي الـ AI يرجع JSON فيه تفاصيل أكتر للتذكير
             reminder_data = await ai.extract_reminder_details(ai_final_answer)
             reminder_title = reminder_data.get("title", "تذكير صيانة دورية")
             reminder_desc = reminder_data.get("description", description)
-
             suggested_frequency = reminder_data.get("frequency", "مرة واحدة فقط")
-            suggested_date = reminder_data.get("suggested_date", None)
 
-            # لو مفيش تاريخ، حط تاريخ افتراضي (كمان 7 أيام)
-            if not suggested_date:
-                future_date = datetime.now() + timedelta(days=7)
-                # هنحوله لصيغة (يوم/شهر/سنة) أو الصيغة اللي الفرونت إند بيفضلها
-                suggested_date = future_date.strftime("%Y/%m/%d")
+            start_date_str = reminder_data.get("suggested_date")
+            if not start_date_str:
+                start_date_str = (datetime.now() + timedelta(days=7)).strftime(
+                    "%Y/%m/%d"
+                )
+            suggested_date = start_date_str
 
-        # 9. إرجاع النتيجة النهائية للواجهة الأمامية
+            try:
+                dt_start = datetime.strptime(
+                    start_date_str.replace("/", "-"), "%Y-%m-%d"
+                )
+                suggested_end_date = (dt_start + timedelta(days=365)).strftime(
+                    "%Y/%m/%d"
+                )
+            except:
+                suggested_end_date = (datetime.now() + timedelta(days=372)).strftime(
+                    "%Y/%m/%d"
+                )
+
+            notification_time = reminder_data.get("notification_time", "09:00 AM")
+
         return RecommendationResponse(
             query=description,
             ai_answer=ai_final_answer,
             source_documents=[top_case] if top_case else [],
-            requires_feedback=not is_hard_issue,  # 👈 تظهر التقييم بس لو مش طوارئ
+            requires_feedback=not is_hard_issue,
             requires_mechanic=is_hard_issue,
             offers_reminder=offers_reminder_flag,
-            recommended_mechanics=extracted_mechanics_list,
+            recommended_mechanics=extracted_mechanics_list if is_hard_issue else [],
             car_id=car_id,
             issue_summary=description,
-
-            # --- الداتا الخاصة بملء فورم الطوارئ ---
             service_type=auto_fill_service_type,
             required_service=auto_fill_required_service,
             service_location_type=auto_fill_location_type,
             use_current_location=auto_fill_use_gps,
             has_attachment=auto_fill_has_attachment,
-
-            # --- الداتا الخاصة بملء فورم تذكيرات الصيانة ---
             suggested_reminder_title=reminder_title,
             suggested_reminder_desc=reminder_desc,
             suggested_frequency=suggested_frequency,
-            suggested_date=suggested_date
+            suggested_date=suggested_date,
+            suggested_end_date=suggested_end_date,
+            notification_time=notification_time,
         )
 
     except Exception as e:
@@ -436,8 +461,8 @@ async def approve_mechanic(
     file: UploadFile = File(...),
 ):
     """
-        دالة للتحقق من أوراق ومستندات الفنيين (مثل: البطاقة الشخصية، رخصة الورشة).
-        تستقبل صورة المستند، وتحولها لصيغة Base64، ثم ترسلها لخدمة الـ AI (Gemini Vision).
+    دالة للتحقق من أوراق ومستندات الفنيين (مثل: البطاقة الشخصية، رخصة الورشة).
+    تستقبل صورة المستند، وتحولها لصيغة Base64، ثم ترسلها لخدمة الـ AI (Gemini Vision).
     """
     contents = await file.read()
     encoded = base64.b64encode(contents).decode("utf-8")
@@ -465,7 +490,7 @@ async def submit_feedback(
             server=settings.DB_SERVER,
             user=settings.DB_USER,
             password=settings.DB_PASSWORD,
-            database=settings.DB_NAME
+            database=settings.DB_NAME,
         )
         cursor = conn.cursor()
 
@@ -480,7 +505,9 @@ async def submit_feedback(
         conn.close()
 
         if is_helpful:
-            response_message = "شكراً لتقييمك الإيجابي! رأيك يساعدنا على تطوير GearUp للأفضل. 🚀"
+            response_message = (
+                "شكراً لتقييمك الإيجابي! رأيك يساعدنا على تطوير GearUp للأفضل. 🚀"
+            )
         else:
             response_message = "نعتذر إن لم تكن الإجابة مفيدة بالقدر الكافي. نقدر لك هذا التقييم، وسنعمل جاهدين على التعلم منه وتحسين جودة ردودنا في المرات القادمة. 🛠️"
 
@@ -489,5 +516,7 @@ async def submit_feedback(
     except Exception as e:
         print(f"❌ Feedback Error: {e}")
         # حتى لو التقييم فشل مش عايزين نضرب Error لليوزر، نعديها عادي
-        return {"status": "error",
-                "message": "عذراً، يبدو أن هناك عطلاً بسيطاً في النظام ⚙️! لم نتمكن من حفظ تقييمك الآن."}
+        return {
+            "status": "error",
+            "message": "عذراً، يبدو أن هناك عطلاً بسيطاً في النظام ⚙️! لم نتمكن من حفظ تقييمك الآن.",
+        }
