@@ -2,6 +2,8 @@ import json
 import base64
 from typing import Optional
 
+from datetime import datetime, timedelta
+
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 import pymssql
 import functools
@@ -338,21 +340,37 @@ async def get_recommendation(
                 mechanics_text = "\n\n(للأسف لم أجد فنيين متاحين حالياً، أنصحك بالتوجه لأقرب مركز صيانة معتمد)."
 
         # 8. بناء الرد النهائي وتجهيز التعليمات (Instructions)
-        offers_reminder_flag = False  # متغير افتراضي للتذكير
+        offers_reminder_flag = False
+
+        # متغيرات الملء التلقائي الافتراضية للفورم
+        auto_fill_service_type = None
+        auto_fill_required_service = None
+        auto_fill_location_type = None
+        auto_fill_use_gps = False
+        auto_fill_has_attachment = True if file else False  # لو اليوزر رافع صورة نخليها True
+
+        suggested_frequency = None
+        suggested_date = None
         reminder_title = None
         reminder_desc = None
 
         if is_hard_issue:
-            # مسار الطوارئ
+            # مسار الطوارئ (تجهيز بيانات الفورم)
+            auto_fill_service_type = "خدمة طارئة"
+            auto_fill_required_service = "تشخيص"
+            auto_fill_location_type = "ميكانيكي متنقل"
+            auto_fill_use_gps = True  # ندي أوردر للفرونت إند يقرأ اللوكيشن بتاع الموبايل
+
             if extracted_mechanics_list:
                 instructions = f"عطل حرج! {user_context}. حذر المستخدم. يجب أن تدرج قائمة الفنيين التالية كما هي بالنص: {mechanics_text}"
             else:
                 instructions = f"عطل حرج! {user_context}. حذر المستخدم. ثم اعتذر له وأخبره بهذا النص حرفياً: {mechanics_text}"
 
+
         elif is_asking_for_advice:
-            # مسار النصائح والصيانة الدورية - FR-3
-            instructions = f"{user_context} المستخدم يطلب نصائح صيانة دورية أو استشارة. قدم نصائح مبسطة وودية (غير معقدة فنياً) واستخدم Emojis. في نهاية ردك، اسأله بلباقة: 'هل تحب أظبطلك تذكير بموعد الصيانة الجاية على السيستم؟'"
-            offers_reminder_flag = True  # تفعيل زر التذكير للفرونت إند
+            # مسار النصائح
+            instructions = f"{user_context} المستخدم يطلب نصائح صيانة دورية أو استشارة. قدم نصائح مبسطة وودية. في النهاية، اعرض عليه إنشاء تذكير صيانة صراحةً، لتفعيل الزر الخاص بذلك في الواجهة."
+            offers_reminder_flag = True
 
         elif difficulty == "متوسط":
             instructions = f"{user_context} الحل: {suggested_solution}. التنسيق: ⚠️ ملاحظة هامة (اطمنه)، ⚙️ إيه المشكلة والحل؟، 👨‍🔧 نصيحة الخبير."
@@ -360,29 +378,48 @@ async def get_recommendation(
         else:
             instructions = f"{user_context} الحل: {suggested_solution}. التنسيق: ✅ لا تقلق الموضوع بسيط، 🛠️ خطوات الحل (استخدم إيموجي لكل خطوة)."
 
-        # --- [ تنفيذ الذكاء الاصطناعي وتجهيز المخرجات (AI Execution & Output Preparation) ] ---
-        # 1. توليد الرد النهائي بناءً على التعليمات المحددة في أي من المسارات السابقة
+        # --- [ تنفيذ الذكاء الاصطناعي وتجهيز المخرجات ] ---
         ai_final_answer = await ai.generate_response(messages, [instructions], image_data_url)
 
-        # 2. استخراج بيانات التذكير من نص الـ AI (يُنفذ فقط في مسار طلب النصائح والصيانة)
         if offers_reminder_flag:
+            # هنخلي الـ AI يرجع JSON فيه تفاصيل أكتر للتذكير
             reminder_data = await ai.extract_reminder_details(ai_final_answer)
-            reminder_title = reminder_data.get("title", "تذكير صيانة")
+            reminder_title = reminder_data.get("title", "تذكير صيانة دورية")
             reminder_desc = reminder_data.get("description", description)
 
-        # 9. إرجاع النتيجة النهائية للواجهة الأمامية (Final Return Contract)
+            suggested_frequency = reminder_data.get("frequency", "مرة واحدة فقط")
+            suggested_date = reminder_data.get("suggested_date", None)
+
+            # لو مفيش تاريخ، حط تاريخ افتراضي (كمان 7 أيام)
+            if not suggested_date:
+                future_date = datetime.now() + timedelta(days=7)
+                # هنحوله لصيغة (يوم/شهر/سنة) أو الصيغة اللي الفرونت إند بيفضلها
+                suggested_date = future_date.strftime("%Y/%m/%d")
+
+        # 9. إرجاع النتيجة النهائية للواجهة الأمامية
         return RecommendationResponse(
             query=description,
             ai_answer=ai_final_answer,
             source_documents=[top_case] if top_case else [],
-            requires_feedback=True,
+            requires_feedback=not is_hard_issue,  # 👈 تظهر التقييم بس لو مش طوارئ
             requires_mechanic=is_hard_issue,
             offers_reminder=offers_reminder_flag,
             recommended_mechanics=extracted_mechanics_list,
             car_id=car_id,
             issue_summary=description,
-            suggested_reminder_title=reminder_title,  # العنوان المستخرج للاستخدام في الـ Auto-fill
-            suggested_reminder_desc=reminder_desc  # الوصف المستخرج للاستخدام في الـ Auto-fill
+
+            # --- الداتا الخاصة بملء فورم الطوارئ ---
+            service_type=auto_fill_service_type,
+            required_service=auto_fill_required_service,
+            service_location_type=auto_fill_location_type,
+            use_current_location=auto_fill_use_gps,
+            has_attachment=auto_fill_has_attachment,
+
+            # --- الداتا الخاصة بملء فورم تذكيرات الصيانة ---
+            suggested_reminder_title=reminder_title,
+            suggested_reminder_desc=reminder_desc,
+            suggested_frequency=suggested_frequency,
+            suggested_date=suggested_date
         )
 
     except Exception as e:
@@ -419,9 +456,10 @@ async def approve_mechanic(
 async def submit_feedback(
     user_id: str = Form(...),
     query: str = Form(...),
+    ai_response: str = Form(...),
     is_helpful: bool = Form(...),
 ):
-    """دالة لتسجيل تقييم المستخدم لرد الـ AI"""
+    """دالة لتسجيل تقييم المستخدم لرد الـ AI مع الاحتفاظ بسجل كامل للمحادثة"""
     try:
         conn = pymssql.connect(
             server=settings.DB_SERVER,
@@ -431,29 +469,25 @@ async def submit_feedback(
         )
         cursor = conn.cursor()
 
-        # استعلام لإدخال التقييم
+        # استعلام لإدخال التقييم كـ Log جديد دايماً (Insert Only)
         query_sql = """
-                    IF EXISTS (SELECT 1 FROM dbo.AI_Feedback WHERE UserId = %s AND UserQuery = %s)
-                        UPDATE dbo.AI_Feedback SET IsHelpful = %s, CreatedAt = GETDATE() WHERE UserId = %s AND UserQuery = %s
-                    ELSE
-                        INSERT INTO dbo.AI_Feedback (UserId, UserQuery, IsHelpful, CreatedAt) VALUES (%s, %s, %s, GETDATE())
-                """
-        cursor.execute(query_sql, (user_id, query, is_helpful, user_id, query, user_id, query, is_helpful))
+            INSERT INTO dbo.AI_Feedback (UserId, UserQuery, AIResponse, IsHelpful, CreatedAt) 
+            VALUES (%s, %s, %s, %s, GETDATE())
+        """
+        cursor.execute(query_sql, (user_id, query, ai_response, is_helpful))
 
         conn.commit()
         conn.close()
-        return {"status": "success", "message": "تم تسجيل التقييم بنجاح."}
 
-    # print(
-    #   f"DEBUG: Feedback Received -> User: {user_id}, Query: {query}, Helpful: {is_helpful}"
-    # )
-    # return {
-    #    "status": "success",
-    #    "message": "التيست اشتغل يا جيهاد! الداتا وصلت للـ Terminal.",
-    # }
-    # return {"status": "success", "message": "شكراً لتقييمك! بنتعلم من ملاحظاتك."}
+        if is_helpful:
+            response_message = "شكراً لتقييمك الإيجابي! رأيك يساعدنا على تطوير GearUp للأفضل. 🚀"
+        else:
+            response_message = "نعتذر إن لم تكن الإجابة مفيدة بالقدر الكافي. نقدر لك هذا التقييم، وسنعمل جاهدين على التعلم منه وتحسين جودة ردودنا في المرات القادمة. 🛠️"
+
+        return {"status": "success", "message": response_message}
 
     except Exception as e:
-        print(f"Feedback Error: {e}")
+        print(f"❌ Feedback Error: {e}")
         # حتى لو التقييم فشل مش عايزين نضرب Error لليوزر، نعديها عادي
-        return {"status": "error", "message": "حصلت مشكلة بسيطة وإحنا بنسجل تقييمك."}
+        return {"status": "error",
+                "message": "عذراً، يبدو أن هناك عطلاً بسيطاً في النظام ⚙️! لم نتمكن من حفظ تقييمك الآن."}

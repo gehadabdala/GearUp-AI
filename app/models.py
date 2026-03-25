@@ -25,9 +25,6 @@ class QueryRequest(BaseModel):
 # =====================================================================
 # [ 2. نموذج الاستجابة والتوصيات (Recommendation Response Model) ]
 # =====================================================================
-from pydantic import BaseModel
-from typing import List, Optional
-
 class RecommendationResponse(BaseModel):
     """
     العقد (Contract) بين الباك إند والفرونت إند لنتيجة الفحص الذكي.
@@ -46,6 +43,19 @@ class RecommendationResponse(BaseModel):
     recommended_mechanics: List[dict] = []  # قائمة الفنيين المرشحين بالـ IDs والإحداثيات لعرضهم على الخريطة
     car_id: Optional[str] = None            # إرجاع ID السيارة للفرونت لاستخدامه كـ Auto-fill في فورم طلب الصيانة
     issue_summary: Optional[str] = None     # إرجاع وصف مختصر للمشكلة لاستخدامه كـ Auto-fill في فورم الطلب
+
+    # حقول خاصة بالملء التلقائي لفورم التذكير (Auto-fill Flags for Reminder)
+    suggested_reminder_title: Optional[str] = None
+    suggested_reminder_desc: Optional[str] = None
+    suggested_frequency: Optional[str] = None  # 'مرة واحدة فقط' أو 'يتكرر' أو 'لفترة محددة'
+    suggested_date: Optional[str] = None  # تاريخ مقترح (مثال: 'بعد 6 أشهر' أو تاريخ محدد)
+
+    # حقول خاصة بالملء التلقائي لفورم الطوارئ (Auto-fill Flags)
+    service_type: Optional[str] = None  # نوع الخدمة (مجدولة ولا طارئة)
+    required_service: Optional[str] = None  # الخدمة المطلوبة (تشخيص، تغيير زيت، إلخ)
+    service_location_type: Optional[str] = None  # موقع الخدمة (في الورشة ولا متنقل)
+    use_current_location: bool = False  # أمر للفرونت إند إنه يفتح الـ GPS
+    has_attachment: bool = False  # هل فيه صورة مرفقة ولا لأ
 
 
 # =====================================================================
