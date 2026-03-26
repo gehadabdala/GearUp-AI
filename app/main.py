@@ -334,18 +334,21 @@ async def get_recommendation(
         )
 
         if mechanics_list:
-            extracted_mechanics_list = mechanics_list
+            # extracted_mechanics_list = mechanics_list
             mechanics_text = "\n\nإليك الفنيين المتاحين حالياً في نظامنا:\n"
-            seen_mechanics = set()
+            unique_mechanics_list = []
+            seen_mechanics_ids = set()
             for m in mechanics_list:
                 m_id = m.get("MechanicId")
-                if m_id not in seen_mechanics:
+                if m_id not in seen_mechanics_ids:
+                    unique_mechanics_list.append(m)
+
                     lat, lng = m.get("Latitude", 0), m.get("Longitude", 0)
                     map_link = (
                         f"http://googleusercontent.com/maps.google.com/?q={lat},{lng}"
                     )
                     mechanics_text += f"- المهندس: {m.get('Name')} | 📞: {m.get('Phone')} | 📍 اللوكيشن: {map_link}\n"
-                    seen_mechanics.add(m_id)
+                    seen_mechanics_ids.add(m_id)
 
         # 8. بناء الرد النهائي وتحديد المسار (الأولوية للنصيحة)
         offers_reminder_flag = False
@@ -376,7 +379,16 @@ async def get_recommendation(
             auto_fill_required_service = "تشخيص"
             auto_fill_location_type = "ميكانيكي متنقل"
             auto_fill_use_gps = True
-            instructions = f"أنت خبير طوارئ في تطبيق GearUp. {user_context}. المشكلة خطيرة! حذر المستخدم باختصار، ثم قدم نصيحة سريعة، واذكر قائمة الفنيين: {mechanics_text}"
+            instructions = (
+                f"أنت خبير طوارئ ودود في GearUp. {user_context}. "
+                "1. حذر المستخدم فوراً لو الحالة خطيرة (مثل خبط الموتور) وانصحه بالتوقف فوراً. "
+                # التعديل الذكي هنا:
+                f"2. إذا كان هناك حل مقترح ({suggested_solution})، التزم به. "
+                "أما إذا لم يتوفر حل محدد، فاشرح باختصار أن أصوات الخبط عادة ما تتعلق بميكانيكا المحرك الداخلية (مثل الزيت أو البساتم) "
+                "وتتطلب فحصاً فيزيائياً دقيقاً. (تجنب تماماً ذكر البطارية أو الدينامو كسبب للخبط). "
+                "3. أكد للمستخدم أن الفنيين المرشحين 'متنقلين' وسيقومون بفحص السيارة في موقعها الحالي. "
+                f"4. اعرض قائمة الفنيين بأسلوب منظم: {mechanics_text}"
+            )
 
         elif difficulty == "متوسط":
             instructions = f"{user_context} الحل: {suggested_solution}. التنسيق: ⚠️ ملاحظة هامة، ⚙️ إيه المشكلة والحل؟، 👨‍🔧 نصيحة الخبير."
@@ -387,6 +399,20 @@ async def get_recommendation(
         ai_final_answer = await ai.generate_response(
             messages, [instructions], image_data_url
         )
+
+        final_source_docs = []
+        if top_case:
+            # لو المشكلة مش خطيرة، ابعت المستندات عادي
+            if not is_hard_issue:
+                final_source_docs = [top_case]
+            else:
+                # لو خطيرة، اتأكد إن المستند اللي طالع مش "سهل" (زي فلتر هواء)
+                # عشان ما يضربش الـ Logic مع التحذير القوي اللي الـ AI قاله
+                if difficulty != "سهل":
+                    final_source_docs = [top_case]
+                else:
+                    final_source_docs = []
+                    # لو الـ RAG جاب حاجة سهلة في وقت كارثة، بنخفيها
 
         (
             reminder_title,
@@ -427,11 +453,11 @@ async def get_recommendation(
         return RecommendationResponse(
             query=description,
             ai_answer=ai_final_answer,
-            source_documents=[top_case] if top_case else [],
+            source_documents=final_source_docs,
             requires_feedback=not is_hard_issue,
             requires_mechanic=is_hard_issue,
             offers_reminder=offers_reminder_flag,
-            recommended_mechanics=extracted_mechanics_list if is_hard_issue else [],
+            recommended_mechanics=unique_mechanics_list if is_hard_issue else [],
             car_id=car_id,
             issue_summary=description,
             service_type=auto_fill_service_type,
