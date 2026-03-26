@@ -94,8 +94,8 @@ def get_mechanics_from_db(specialty: str, sub_specialty: str):
 @safe_db_call
 def get_user_context_data(user_id: str, car_id: Optional[str] = None):
     """
-    جلب بيانات المستخدم وسيارته لبناء "سياق شخصي" (Personalized Context) للـ AI.
-    يساعد الـ AI على التحدث مع المستخدم باسمه وذكر موديل سيارته.
+    استرجاع بيانات العميل والسيارة لبناء سياق محادثة مخصص (Personalized Context).
+    يسمح للذكاء الاصطناعي بمناداة العميل باسمه وذكر موديل سيارته لرفع جودة التجربة.
     """
     if not user_id:
         return None
@@ -180,11 +180,16 @@ async def startup_event():
 # =====================================================================
 @app.post("/recommend", response_model=RecommendationResponse)
 async def get_recommendation(
-    query_data: str = Form(...),
-    user_id: Optional[str] = Form(None),
-    car_id: Optional[str] = Form(None),
-    file: Optional[UploadFile] = File(None),
+        query_data: str = Form(...),
+        user_id: Optional[str] = Form(None),
+        car_id: Optional[str] = Form(None),
+        file: Optional[UploadFile] = File(None),
 ):
+    """
+        المسار الأساسي لتحليل شكوى المستخدم:
+        يقوم بدمج البحث في المستندات (RAG) مع ذكاء Gemini لتحليل الأعطال،
+        تحديد مدى خطورتها، واقتراح فنيين أو تذكيرات صيانة.
+    """
     try:
         # 1. تجهيز البيانات والصورة
         data_dict = json.loads(query_data)
@@ -205,45 +210,72 @@ async def get_recommendation(
             car_brand = user_data.get("Brand", "")
             user_context = f"[معلومة سرية: اسم المستخدم {f_name}، سيارته {car_brand}. استخدم صيغة المذكر/المؤنث الصح.]"
 
-        # 3. الكلمات المفتاحية وتنظيف النص (حل فخ يمين)
+        # 3. الكلمات المفتاحية وتنظيف النص
         clean_desc = description.lower().replace("أ", "ا").replace("إ", "ا").strip()
-        words_in_desc = clean_desc.split()  # تقسيم الجملة لكلمات منفصلة
+        words_in_desc = clean_desc.split()
 
         serious_words = [
-            # المصطلحات الأساسية
             "فتيس",
             "موتور",
             "محرك",
             "ناقل حركة",
             "جير",
-            "حرارة",
             "فرامل",
             "زيت",
             "دخان",
             "صوت",
             "خبط",
-            # كلمات الحوادث والطوارئ (الجديدة)
             "شياط",
             "ريحة",
             "ريحه",
             "بيسرب",
             "تسريب",
+            "بينقط",
+            "تنقيط",
             "بيحدف",
             "تحدف",
             "تيل",
             "طنابير",
             "طنبور",
             "كاوتش",
+            "عجلة",
             "انفجار",
             "دواسة",
             "بنزين",
             "حراره",
+            "حرارة",
             "سخونية",
             "سخونيه",
-            "بتدخن",
+            "بتدخن"
         ]
-        greeting_keywords = ["مين", "عرفني", "أنت", "اهلا", "سلام", "وظيفتك"]
-        advice_keywords = ["اغير", "امتى", "متى", "موعد", "صيانه", "كل قد ايه"]
+
+        # كلمات الخطر اللي بتكسر مود النصيحة (Safety First)
+        critical_safety_words = ["فرامل", "مش بتوقف", "دواسة", "دواسه", "حرارة", "حراره", "دخان", "حريقة", "خبط موتور"]
+        is_critical_danger = any(word in clean_desc for word in critical_safety_words)
+
+        greeting_keywords = [
+            "مين",
+            "عرفني",
+            "أنت",
+            "اهلا",
+            "سلام",
+            "وظيفتك"
+        ]
+
+        advice_keywords = [
+            "اغير",
+            "امتى",
+            "متى",
+            "موعد",
+            "صيانه",
+            "صيانة",
+            "كل قد ايه",
+            "احافظ",
+            "اهتم",
+            "نصيحة",
+            "نصايح",
+            "تنصحني"
+        ]
 
         contains_serious_word = any(word in words_in_desc for word in serious_words)
         is_greeting = any(word in words_in_desc for word in greeting_keywords)
@@ -257,46 +289,30 @@ async def get_recommendation(
         suggested_part = top_case.get("القطعة المرشحة", "غير محدد")
         suggested_solution = top_case.get("الحل المقترح", "يرجى الفحص")
 
-        # 5. منطق التحية (يتم تجاوزه لو فيه كلمة خطيرة)
-        if is_greeting and not contains_serious_word:
+        # 5. منطق التحية
+        if is_greeting and not contains_serious_word and not is_critical_danger:
             instructions = "أنت GearUp AI، خبير سيارات ودود. رد بترحيب وذكر بتخصصك فقط."
-            ai_chat_answer = await ai.generate_response(
-                messages, [user_context, instructions], image_data_url
-            )
+            ai_chat_answer = await ai.generate_response(messages, [user_context, instructions], image_data_url)
             return RecommendationResponse(
-                query=description,
-                ai_answer=ai_chat_answer,
-                source_documents=[],
-                requires_feedback=False,
+                query=description, ai_answer=ai_chat_answer, source_documents=[], requires_feedback=False
             )
 
-        # 6. جلب الميكانيكية (لو الحالة تستدعي)
+        # 6. جلب الميكانيكية
         mechanics_text = ""
         unique_mechanics_list = []
 
-        # تحديد لو المشكلة طارئة (صعبة OR كلمات خطيرة OR طلب ميكانيكي)
+        # الأولوية: لو فيه خطر حقيقي، بنلغي "مود النصيحة" عشان الميكانيكية يظهروا
+        is_advice_mode = is_asking_for_advice and not is_critical_danger
+
         user_asking_for_workshop = any(
-            word in clean_desc for word in ["ورشة", "ميكانيكي", "فني", "تصليح"]
-        )
+            word in clean_desc for word in ["ورشة", "ميكانيكي", "فني", "تصليح", "مركز صيانة"])
+
         is_hard_issue = (
-            (difficulty == "صعب") or contains_serious_word or user_asking_for_workshop
-        )
-        specialty_json = await ai.extract_specialty(description, suggested_part)
-        mechanics_list = get_mechanics_from_db(
-            specialty_json.get("specialty", "ميكانيكا"),
-            specialty_json.get("sub_specialty", ""),
+                (difficulty == "صعب" or contains_serious_word or user_asking_for_workshop or is_critical_danger)
+                and not is_advice_mode
         )
 
-        if mechanics_list:
-            # extracted_mechanics_list = mechanics_list
-            mechanics_text = "\n\nإليك الفنيين المتاحين حالياً في نظامنا:\n"
-
-            seen_mechanics_ids = set()
-            for m in mechanics_list:
-                m_id = m.get("MechanicId")
-                if m_id not in seen_mechanics_ids:
-                    unique_mechanics_list.append(m)
-
+        # التعديل الجوهري: لا نلمس الداتا بيز إلا لو حالة طوارئ حقيقية
         if is_hard_issue:
             specialty_json = await ai.extract_specialty(description, suggested_part)
             mechanics_list = get_mechanics_from_db(
@@ -305,67 +321,49 @@ async def get_recommendation(
             )
 
             if mechanics_list:
-                mechanics_text = "\n\nإليك الفنيين المتاحين حالياً:\n"
+                mechanics_text = "\n\nإليك الفنيين المتاحين حالياً في نظامنا:\n"
                 seen_ids = set()
                 for m in mechanics_list:
-                    if m["MechanicId"] not in seen_ids:
+                    m_id = m.get("MechanicId")
+                    if m_id not in seen_ids:
                         unique_mechanics_list.append(m)
-                        map_link = f"http://googleusercontent.com/maps.google.com/?q={m['Latitude']},{m['Longitude']}"
-                        mechanics_text += (
-                            f"- {m['Name']} | 📞: {m['Phone']} | 📍: {map_link}\n"
-                        )
-                        seen_ids.add(m["MechanicId"])
+                        lat, lng = m.get("Latitude", 0), m.get("Longitude", 0)
+                        map_link = f"http://googleusercontent.com/maps.google.com/?q={lat},{lng}"
+                        mechanics_text += f"- {m.get('Name')} | 📞: {m.get('Phone')} | 📍: {map_link}\n"
+                        seen_ids.add(m_id)
 
         # 7. بناء الرد النهائي
         offers_reminder_flag = False
-        auto_fill_data = {
-            "service_type": None,
-            "required_service": None,
-            "location": None,
-            "gps": False,
-        }
+        auto_fill_data = {"service_type": None, "required_service": None, "location": None, "gps": False}
 
-        if is_asking_for_advice:
-            instructions = (
-                f"{user_context} قدم نصائح صيانة دورية وودية واعرض إنشاء تذكير."
-            )
+        if is_advice_mode:
+            instructions = f"{user_context} قدم نصائح صيانة دورية وودية واعرض إنشاء تذكير. لا تذكر أي فنيين."
             offers_reminder_flag = True
         elif is_hard_issue:
-            auto_fill_data = {
-                "service_type": "خدمة طارئة",
-                "required_service": "تشخيص",
-                "location": "ميكانيكي متنقل",
-                "gps": True,
-            }
-            instructions = f"أنت خبير طوارئ. {user_context}. حذر المستخدم لو الحالة خطيرة. الحل المقترح: {suggested_solution}. الفنيين المرشحين متنقلين: {mechanics_text}"
+            auto_fill_data = {"service_type": "خدمة طارئة", "required_service": "تشخيص", "location": "ميكانيكي متنقل",
+                              "gps": True}
+            instructions = f"أنت خبير طوارئ. {user_context}. حذر المستخدم فوراً لو الحالة خطيرة (مثل مشاكل الفرامل). الحل المقترح: {suggested_solution}. الفنيين: {mechanics_text}"
         else:
-            instructions = (
-                f"{user_context} الحل بسيط: {suggested_solution}. التنسيق: خطوات الحل."
-            )
+            instructions = f"{user_context} الحل بسيط: {suggested_solution}. التنسيق: خطوات الحل."
 
-        ai_final_answer = await ai.generate_response(
-            messages, [instructions], image_data_url
-        )
+        ai_final_answer = await ai.generate_response(messages, [instructions], image_data_url)
 
-        # 8. استخراج التذكير (لو متاح)
+        # 8. استخراج التذكير
         reminder_fields = [None] * 6
         if offers_reminder_flag:
             r_data = await ai.extract_reminder_details(ai_final_answer)
             reminder_fields = [
-                r_data.get("title"),
-                r_data.get("description"),
-                r_data.get("frequency"),
-                r_data.get("suggested_date"),
-                None,
-                r_data.get("notification_time"),
+                r_data.get("title"), r_data.get("description"), r_data.get("frequency"),
+                r_data.get("suggested_date"), None, r_data.get("notification_time")
             ]
 
         return RecommendationResponse(
             query=description,
             ai_answer=ai_final_answer,
             source_documents=[top_case] if not is_hard_issue else [],
-            requires_feedback=not is_hard_issue,
+            requires_feedback=is_advice_mode or offers_reminder_flag or (not is_hard_issue),
             requires_mechanic=is_hard_issue,
+            is_advice_mode=is_advice_mode,
             offers_reminder=offers_reminder_flag,
             recommended_mechanics=unique_mechanics_list,
             car_id=car_id,
@@ -381,6 +379,7 @@ async def get_recommendation(
             suggested_date=reminder_fields[3],
             notification_time=reminder_fields[5],
         )
+
     except Exception as e:
         print(f"❌ Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -442,7 +441,7 @@ async def submit_feedback(
         if is_helpful:
             response_message = (
                 "شكراً لتقييمك الإيجابي! رأيك يساعدنا على تطوير GearUp للأفضل. 🚀"
-            )
+)
         else:
             response_message = "نعتذر إن لم تكن الإجابة مفيدة بالقدر الكافي. نقدر لك هذا التقييم، وسنعمل جاهدين على التعلم منه وتحسين جودة ردودنا في المرات القادمة. 🛠️"
 

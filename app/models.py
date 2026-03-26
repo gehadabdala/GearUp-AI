@@ -9,19 +9,17 @@ from typing import List, Optional
 class Message(BaseModel):
     """
     نموذج يمثل رسالة واحدة داخل المحادثة.
-    يحتوي على دور المرسل (user أو model) ومحتوى الرسالة.
+    يحتوي على دور المرسل (user أو model) ومحتوى الرسالة النصي.
     """
-
     role: str
     content: str
 
 
 class QueryRequest(BaseModel):
     """
-    النموذج المستقبل من الفرونت إند عند إرسال رسالة جديدة للذكاء الاصطناعي.
-    يحتوي على تاريخ المحادثة بالكامل لضمان احتفاظ الـ AI بسياق الحوار (Memory).
+    النموذج المستقبل من واجهة المستخدم عند إرسال استفسار جديد.
+    يحتوي على قائمة الرسائل السابقة لضمان استمرارية سياق الحوار (Conversation Context).
     """
-
     messages: List[Message]
 
 
@@ -30,57 +28,39 @@ class QueryRequest(BaseModel):
 # =====================================================================
 class RecommendationResponse(BaseModel):
     """
-    العقد (Contract) بين الباك إند والفرونت إند لنتيجة الفحص الذكي.
-    هذا النموذج يحدد شكل الـ JSON النهائي الذي سيستقبله الفرونت إند لبناء واجهة المستخدم.
+    العقد النهائي (Contract) لنتائج الفحص الذكي وتوصيات الصيانة.
+    يتم استهلاكه بواسطة الفرونت إند لبناء واجهة المستخدم وتفعيل الأزرار والخرائط.
     """
 
-    query: str
-    ai_answer: str
-    source_documents: List[
-        dict
-    ]  # لعرض المصادر/الحالات السابقة التي اعتمد عليها الـ AI في التشخيص
+    query: str                      # نص سؤال المستخدم الأصلي
+    ai_answer: str                  # الرد التحليلي المفصل المولّد بواسطة الذكاء الاصطناعي
+    source_documents: List[dict]    # الحالات المشابهة المستخرجة من قاعدة البيانات (RAG)
 
-    # --- علامات تحكم لواجهة المستخدم (UI Control Flags) ---
-    requires_feedback: bool = (
-        False  # إشارة للفرونت لإظهار أزرار التقييم (👍/👎) في حالات الصيانة فقط
-    )
-    requires_mechanic: bool = (
-        False  # إشارة للفرونت لإظهار زر "اطلب فني طوارئ الآن" عند الأعطال الحرجة
-    )
-    offers_reminder: bool = (
-        False  # إشارة للفرونت لإظهار زر "جدولة تذكير" في حالات طلب نصائح الصيانة الدورية
-    )
+    # --- علامات التحكم المنطقية لواجهة المستخدم (UI Logical Control Flags) ---
+    is_advice_mode: bool = False    # هل الرد مجرد نصيحة عامة؟ (True تعني إيقاف وضع الطوارئ)
+    requires_mechanic: bool = False # هل الحالة تستدعي إظهار زر "اطلب فني طوارئ الآن"؟
+    offers_reminder: bool = False   # هل الحالة تسمح بإظهار زر "جدولة تذكير صيانة"؟
+    requires_feedback: bool = False # هل يجب إظهار أزرار التقييم (👍/👎) للمستخدم؟
+    use_current_location: bool = False # هل يجب على التطبيق طلب تفعيل الـ GPS فوراً؟
+    has_attachment: bool = False    # إشارة بوجود ملف مرفق (صورة) تم تحليلها في الرد
 
-    # --- بيانات الحجز والربط مع النظام الأساسي (Booking & Context Data) ---
-    recommended_mechanics: List[dict] = (
-        []
-    )  # قائمة الفنيين المرشحين بالـ IDs والإحداثيات لعرضهم على الخريطة
-    car_id: Optional[str] = (
-        None  # إرجاع ID السيارة للفرونت لاستخدامه كـ Auto-fill في فورم طلب الصيانة
-    )
-    issue_summary: Optional[str] = (
-        None  # إرجاع وصف مختصر للمشكلة لاستخدامه كـ Auto-fill في فورم الطلب
-    )
+    # --- بيانات الربط مع النظام (System Context & Mapping) ---
+    recommended_mechanics: List[dict] = [] # قائمة الفنيين المقترحين مع بيانات التواصل والموقع
+    car_id: Optional[str] = None           # معرف السيارة المستخدم في العملية لربط الطلبات
+    issue_summary: Optional[str] = None    # ملخص فني للمشكلة للملء التلقائي في نماذج الحجز
 
-    # حقول خاصة بالملء التلقائي لفورم التذكير (Auto-fill Flags for Reminder)
+    # --- بيانات الملء التلقائي لتذكيرات الصيانة (Auto-fill: Reminders) ---
     suggested_reminder_title: Optional[str] = None
     suggested_reminder_desc: Optional[str] = None
-    suggested_frequency: Optional[str] = (
-        None  # 'مرة واحدة فقط' أو 'يتكرر' أو 'لفترة محددة'
-    )
-    suggested_date: Optional[str] = (
-        None  # تاريخ مقترح (مثال: 'بعد 6 أشهر' أو تاريخ محدد)
-    )
+    suggested_frequency: Optional[str] = None # 'يومي', 'شهري', 'كل 10,000 كم' ... إلخ
+    suggested_date: Optional[str] = None      # تاريخ البداية المقترح (YYYY/MM/DD)
+    suggested_end_date: Optional[str] = None  # تاريخ انتهاء التذكير إن وجد
+    notification_time: Optional[str] = None   # وقت الإشعار المفضل (مثلاً: 09:00 AM)
 
-    suggested_end_date: Optional[str] = None  # تاريخ الانتهاء (End Date)
-    notification_time: Optional[str] = None  # وقت الإشعار (مثال: 09:00 AM)
-
-    # حقول خاصة بالملء التلقائي لفورم الطوارئ (Auto-fill Flags)
-    service_type: Optional[str] = None  # نوع الخدمة (مجدولة ولا طارئة)
-    required_service: Optional[str] = None  # الخدمة المطلوبة (تشخيص، تغيير زيت، إلخ)
-    service_location_type: Optional[str] = None  # موقع الخدمة (في الورشة ولا متنقل)
-    use_current_location: bool = False  # أمر للفرونت إند إنه يفتح الـ GPS
-    has_attachment: bool = False  # هل فيه صورة مرفقة ولا لأ
+    # --- بيانات الملء التلقائي لطلبات الطوارئ (Auto-fill: Emergency/Booking) ---
+    service_type: Optional[str] = None          # 'خدمة طارئة' أو 'صيانة مجدولة'
+    required_service: Optional[str] = None      # نوع الخدمة الفنية (مثلاً: 'ميكانيكا محرك')
+    service_location_type: Optional[str] = None # 'في الورشة' أو 'ميكانيكي متنقل'
 
 
 # =====================================================================
@@ -88,22 +68,18 @@ class RecommendationResponse(BaseModel):
 # =====================================================================
 class ApprovalRequest(BaseModel):
     """
-    النموذج المستقبل عند محاولة الفني رفع مستند لتوثيق حسابه.
+    النموذج المستقبل عند محاولة الفني توثيق حسابه الرسمي.
+    يمرر صورة المستند (Base64) ونوعه لتحليله عبر موديلات الرؤية البصرية.
     """
-
     mechanic_id: str
-    doc_type: str  # نوع المستند المرفوع (مثل: commercial_reg, tax_card, national_id)
-    image_data: (
-        str  # الصورة المرفوعة بعد تحويلها لصيغة Base64 لتمريرها لموديل الرؤية البصرية
-    )
+    doc_type: str    # نوع الوثيقة: (رخصة ورشة، بطاقة ضريبية، بطاقة شخصية)
+    image_data: str  # بيانات الصورة بتنسيق Base64
 
 
 class ApprovalResponse(BaseModel):
     """
-    نموذج الرد على عملية الفحص بالذكاء الاصطناعي (OCR).
-    يحتوي على حالة القبول، رسالة توضيحية للفني، ونسبة الثقة في المستند.
+    نتيجة عملية الفحص الآلي للمستندات.
     """
-
-    status: str  # حالة الطلب (مثلاً: approved, rejected, needs_manual_review)
-    message: str  # تفاصيل أو سبب الرفض/القبول المستخرج من الذكاء الاصطناعي
-    score: int  # نسبة الثقة في صحة المستند وقابليته للقراءة (من 0 إلى 100)
+    status: str      # الحالة: (approved: مقبول، rejected: مرفوض، pending: مراجعة يدوية)
+    message: str     # التبرير أو النصائح المستخرجة من الوثيقة (مثل: "الرخصة منتهية الصلاحية")
+    score: int       # نسبة الثقة في جودة وصحة المستند (0-100)
