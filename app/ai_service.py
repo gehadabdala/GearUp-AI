@@ -1,7 +1,9 @@
 import json
 import base64
 from openai import OpenAI
+from app.models import Message
 from app.config import settings
+from datetime import datetime, timedelta
 
 
 # =====================================================================
@@ -17,7 +19,8 @@ class AIService:
     DEFAULT_MODEL = "google/gemini-2.0-flash-001"
 
     def __init__(self):
-        # تهيئة الاتصال بـ OpenRouter باستخدام الإعدادات
+        # 2. التغيير السحري هنا: بنروح لـ base_url بتاع جوجل مباشرة
+        # ده بيخلي مكتبة openai "تتكلم" مع جوجل فوراً
         self.client = OpenAI(
             base_url="https://openrouter.ai/api/v1",
             api_key=settings.OPENROUTER_API_KEY,
@@ -175,40 +178,35 @@ class AIService:
     # =====================================================================
     # [ 5. محرك استخراج بيانات التذكير (Reminder Data Extraction) ]
     # =====================================================================
-    async def extract_reminder_details(self, advice_text: str) -> dict:
+    async def extract_reminder_details(self, ai_answer: str) -> dict:
         """
-        قراءة نصيحة الصيانة التي ولدها الـ AI، واستخراج عنوان ووصف دقيق
-        ليتم استخدامه في جدولة التذكيرات (Scheduled Reminders).
+        هذه الدالة تجبر الـ AI على تحويل النص المرسل للمستخدم إلى بيانات مجدولة.
         """
-        system_prompt = "You are a data extraction API. Output ONLY raw JSON format. No markdown formatting, no explanations."
-
-        user_prompt = f"""
-        بناءً على نصيحة الصيانة التالية التي قدمتها للتو للمستخدم، استخرج "عنوان قصير" للتذكير، و"وصف مختصر" له.
-
-        النصيحة:
-        {advice_text}
-
-        يجب أن ترد بصيغة JSON فقط بهذا الشكل الدقيق:
-        {{"title": "عنوان التذكير (مثال: فحص وتغيير زيت الموتور)", "description": "وصف التذكير (مثال: موعد فحص لزوجة الزيت وتغيير الفلتر حسب النصيحة)"}}
+        prompt = f"""
+        بناءً على هذا الرد: "{ai_answer}"
+        استخرج بيانات التذكير في شكل JSON حصراً كالتالي:
+        {{
+          "title": "عنوان قصير للتذكير",
+          "description": "وصف مختصر",
+          "frequency": "مرة واحدة / يومي / أسبوعي / شهري / كل 6 أشهر",
+          "suggested_date": "تاريخ البداية بتنسيق YYYY/MM/DD (لو لم يذكر، افترض أنه بعد أسبوع من اليوم)",
+          "notification_time": "الوقت بتنسيق HH:MM AM/PM"
+        }}
+        ملاحظة: اليوم هو {datetime.now().strftime('%Y/%m/%d')}.
         """
 
         try:
-            # نستخدم Temperature 0.0 لضمان دقة الهيكل (JSON)
-            response = self.client.chat.completions.create(
-                model=self.DEFAULT_MODEL,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                temperature=0.0,
-            )
-
-            result_text = response.choices[0].message.content
-            clean_json_text = result_text.replace("```json", "").replace("```", "").strip()
-
-            return json.loads(clean_json_text)
-
-        except Exception as e:
-            print(f"❌ [Reminder Extraction Error]: {e}")
-            # Fallback في حالة الفشل
-            return {"title": "تذكير صيانة دورية", "description": "موعد الفحص والصيانة الدورية للسيارة"}
+            # بننادي الـ AI تاني بس بـ Prompt مخصص للاستخراج
+            response = await self.generate_response([Message(role="user", content=prompt)])
+            # تنظيف الرد من أي علامات Markdown عشان نعرف نحوله لـ Dictionary
+            clean_json = response.replace("```json", "").replace("```", "").strip()
+            return json.loads(clean_json)
+        except:
+            # لو فشل، بنرجع قيم افتراضية بدل الـ Null
+            return {
+                "title": "تذكير صيانة",
+                "description": ai_answer[:50],
+                "frequency": "مرة واحدة فقط",
+                "suggested_date": (datetime.now() + timedelta(days=7)).strftime("%Y/%m/%d"),
+                "notification_time": "10:00 AM"
+            }

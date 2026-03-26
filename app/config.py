@@ -9,6 +9,7 @@ load_dotenv()
 class Settings:
     # 1. إعدادات الذكاء الاصطناعي
     OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
     # 2. إعدادات قاعدة بيانات الميكانيكية
     DB_SERVER = os.getenv("DB_SERVER")
