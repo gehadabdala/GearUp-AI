@@ -241,10 +241,28 @@ async def get_recommendation(
         # 6. جلب الميكانيكية (لو الحالة تستدعي)
         mechanics_text = ""
         unique_mechanics_list = []
+<<<<<<< Updated upstream
 
         # تحديد لو المشكلة طارئة (صعبة OR كلمات خطيرة OR طلب ميكانيكي)
         user_asking_for_workshop = any(word in clean_desc for word in ["ورشة", "ميكانيكي", "فني", "تصليح"])
         is_hard_issue = (difficulty == "صعب") or contains_serious_word or user_asking_for_workshop
+=======
+        specialty_json = await ai.extract_specialty(description, suggested_part)
+        mechanics_list = get_mechanics_from_db(
+            specialty_json.get("specialty", "ميكانيكا"),
+            specialty_json.get("sub_specialty", ""),
+        )
+
+        if mechanics_list:
+            # extracted_mechanics_list = mechanics_list
+            mechanics_text = "\n\nإليك الفنيين المتاحين حالياً في نظامنا:\n"
+
+            seen_mechanics_ids = set()
+            for m in mechanics_list:
+                m_id = m.get("MechanicId")
+                if m_id not in seen_mechanics_ids:
+                    unique_mechanics_list.append(m)
+>>>>>>> Stashed changes
 
         if is_hard_issue:
             specialty_json = await ai.extract_specialty(description, suggested_part)

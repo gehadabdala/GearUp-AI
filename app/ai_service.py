@@ -18,6 +18,14 @@ class AIService:
     # تحديد الموديل كمتغير ثابت لسهولة التعديل مستقبلاً
     DEFAULT_MODEL = "google/gemini-2.0-flash-001"
 
+    # DEFAULT_MODEL = "google/gemini-2.0-flash-001:free"
+
+    # DEFAULT_MODEL = "google/gemini-2.0-flash-lite-preview-02-05:free"
+
+    # DEFAULT_MODEL = "google/gemini-2.0-pro-exp-02-05:free"
+
+    # DEFAULT_MODEL = "google/gemini-pro-1.5:free"
+
     def __init__(self):
         # 2. التغيير السحري هنا: بنروح لـ base_url بتاع جوجل مباشرة
         # ده بيخلي مكتبة openai "تتكلم" مع جوجل فوراً
@@ -25,7 +33,6 @@ class AIService:
             base_url="https://openrouter.ai/api/v1",
             api_key=settings.OPENROUTER_API_KEY,
         )
-
 
     # =====================================================================
     # [ 2. محرك الدردشة والتشخيص (Chat & Diagnostics Engine) ]
@@ -86,12 +93,12 @@ class AIService:
                 model=self.DEFAULT_MODEL,
                 messages=formatted_messages,
                 temperature=0.5,
+                max_tokens=512,
             )
             return response.choices[0].message.content
         except Exception as e:
             print(f"❌ [AI Generate Error]: {e}")
             return "عذراً، واجهت مشكلة تقنية في الخادم. يرجى المحاولة مرة أخرى لاحقاً."
-
 
     # =====================================================================
     # [ 3. محرك قراءة المستندات (Vision & OCR) ]
@@ -112,13 +119,13 @@ class AIService:
                         ],
                     }
                 ],
-                temperature=0.1, # نستخدم Temperature 0.1 لضمان الدقة العالية وعدم التأليف (Hallucination) في قراءة الأرقام
+                temperature=0.1,  # نستخدم Temperature 0.1 لضمان الدقة العالية وعدم التأليف (Hallucination) في قراءة الأرقام
+                max_tokens=512,
             )
             return response.choices[0].message.content
         except Exception as e:
             print(f"[OCR Error]: {e}")
             return f"خطأ في قراءة الصورة: {str(e)}"
-
 
     # =====================================================================
     # [ 4. محرك استخراج البيانات المهيكلة (Structured Data Extraction) ]
@@ -161,11 +168,14 @@ class AIService:
                     {"role": "user", "content": user_prompt},
                 ],
                 temperature=0.0,
+                max_tokens=200,
             )
 
             result_text = response.choices[0].message.content
             # تنظيف الرد من أي علامات Markdown قد يضيفها الموديل بالغلط
-            clean_json_text = result_text.replace("```json", "").replace("```", "").strip()
+            clean_json_text = (
+                result_text.replace("```json", "").replace("```", "").strip()
+            )
 
             return json.loads(clean_json_text)
 
@@ -173,7 +183,6 @@ class AIService:
             print(f"❌ [Specialty Extraction Error]: {e}")
             # Fallback (قيمة احتياطية) في حالة فشل التحليل حتى لا يتوقف النظام
             return {"specialty": "ميكانيكا", "sub_specialty": "موتور"}
-
 
     # =====================================================================
     # [ 5. محرك استخراج بيانات التذكير (Reminder Data Extraction) ]
@@ -196,6 +205,7 @@ class AIService:
         """
 
         try:
+<<<<<<< Updated upstream
             # بننادي الـ AI تاني بس بـ Prompt مخصص للاستخراج
             response = await self.generate_response([Message(role="user", content=prompt)])
             # تنظيف الرد من أي علامات Markdown عشان نعرف نحوله لـ Dictionary
@@ -210,3 +220,29 @@ class AIService:
                 "suggested_date": (datetime.now() + timedelta(days=7)).strftime("%Y/%m/%d"),
                 "notification_time": "10:00 AM"
             }
+=======
+            # نستخدم Temperature 0.0 لضمان دقة الهيكل (JSON)
+            response = self.client.chat.completions.create(
+                model=self.DEFAULT_MODEL,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.0,
+            )
+
+            result_text = response.choices[0].message.content
+            clean_json_text = (
+                result_text.replace("```json", "").replace("```", "").strip()
+            )
+
+            return json.loads(clean_json_text)
+
+        except Exception as e:
+            print(f"❌ [Reminder Extraction Error]: {e}")
+            # Fallback في حالة الفشل
+            return {
+                "title": "تذكير صيانة دورية",
+                "description": "موعد الفحص والصيانة الدورية للسيارة",
+            }
+>>>>>>> Stashed changes
