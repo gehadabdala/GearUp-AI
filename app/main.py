@@ -274,7 +274,16 @@ async def get_recommendation(
             "اهتم",
             "نصيحة",
             "نصايح",
-            "تنصحني"
+            "تنصحني",
+            # الكلمات الجديدة اللي هنضيفها هنا:
+            "احسن",
+            "أحسن",
+            "افضل",
+            "أفضل",
+            "نوع",
+            "انواع",
+            "اختار",
+            "ايه"
         ]
 
         contains_serious_word = any(word in words_in_desc for word in serious_words)
@@ -295,7 +304,7 @@ async def get_recommendation(
             ai_chat_answer = await ai.generate_response(messages, [user_context, instructions], image_data_url)
             return RecommendationResponse(
                 query=description, ai_answer=ai_chat_answer, source_documents=[], requires_feedback=False
-            )
+        )
 
         # 6. جلب بيانات الفنيين (بدون عرضها في نص الشات)
         unique_mechanics_list = []
