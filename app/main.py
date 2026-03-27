@@ -297,8 +297,7 @@ async def get_recommendation(
                 query=description, ai_answer=ai_chat_answer, source_documents=[], requires_feedback=False
             )
 
-        # 6. جلب الميكانيكية
-        mechanics_text = ""
+        # 6. جلب بيانات الفنيين (بدون عرضها في نص الشات)
         unique_mechanics_list = []
 
         # الأولوية: لو فيه خطر حقيقي، بنلغي "مود النصيحة" عشان الميكانيكية يظهروا
@@ -312,7 +311,7 @@ async def get_recommendation(
                 and not is_advice_mode
         )
 
-        # التعديل الجوهري: لا نلمس الداتا بيز إلا لو حالة طوارئ حقيقية
+        # التعديل: بنجيب البيانات من الـ DB بس مش بنحولها لـ Text (mechanics_text)
         if is_hard_issue:
             specialty_json = await ai.extract_specialty(description, suggested_part)
             mechanics_list = get_mechanics_from_db(
@@ -321,18 +320,14 @@ async def get_recommendation(
             )
 
             if mechanics_list:
-                mechanics_text = "\n\nإليك الفنيين المتاحين حالياً في نظامنا:\n"
                 seen_ids = set()
                 for m in mechanics_list:
                     m_id = m.get("MechanicId")
                     if m_id not in seen_ids:
                         unique_mechanics_list.append(m)
-                        lat, lng = m.get("Latitude", 0), m.get("Longitude", 0)
-                        map_link = f"http://googleusercontent.com/maps.google.com/?q={lat},{lng}"
-                        mechanics_text += f"- {m.get('Name')} | 📞: {m.get('Phone')} | 📍: {map_link}\n"
                         seen_ids.add(m_id)
 
-        # 7. بناء الرد النهائي
+        # 7. بناء الرد النهائي وتوجيه الـ AI
         offers_reminder_flag = False
         auto_fill_data = {"service_type": None, "required_service": None, "location": None, "gps": False}
 
@@ -340,9 +335,19 @@ async def get_recommendation(
             instructions = f"{user_context} قدم نصائح صيانة دورية وودية واعرض إنشاء تذكير. لا تذكر أي فنيين."
             offers_reminder_flag = True
         elif is_hard_issue:
-            auto_fill_data = {"service_type": "خدمة طارئة", "required_service": "تشخيص", "location": "ميكانيكي متنقل",
-                              "gps": True}
-            instructions = f"أنت خبير طوارئ. {user_context}. حذر المستخدم فوراً لو الحالة خطيرة (مثل مشاكل الفرامل). الحل المقترح: {suggested_solution}. الفنيين: {mechanics_text}"
+            auto_fill_data = {
+                "service_type": "خدمة طارئة",
+                "required_service": "تشخيص",
+                "location": "ميكانيكي متنقل",
+                "gps": True
+            }
+            # التعديل هنا: الـ AI بيقول إن فيه فنيين متاحين بس ميعرضش بياناتهم (الفرونت هيعرض الزرار)
+            instructions = (
+                f"أنت خبير طوارئ. {user_context}. حذر المستخدم فوراً لو الحالة خطيرة (مثل مشاكل الفرامل). "
+                f"الحل المقترح حالياً: {suggested_solution}. "
+                f"أخبر المستخدم بوضوح أن هناك فنيين متخصصين متاحين على منصة GearUp يمكنهم مساعدته فوراً، "
+                f"وانصحه بالضغط على زر 'حجز خدمة طارئة' للمتابعة. ممنوع ذكر أسماء أو أرقام تليفونات الفنيين."
+            )
         else:
             instructions = f"{user_context} الحل بسيط: {suggested_solution}. التنسيق: خطوات الحل."
 
