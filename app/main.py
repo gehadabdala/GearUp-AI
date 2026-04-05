@@ -4,7 +4,9 @@ from typing import Optional
 
 from datetime import datetime, timedelta
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Query
+from fastapi.middleware.cors import CORSMiddleware
+
 import pymssql
 import functools
 from app.config import settings
@@ -18,6 +20,20 @@ from app.models import (
 )
 
 app = FastAPI(title="GearUp Recommendation System")
+
+# =====================================================================
+# [ إعدادات الـ CORS (Cross-Origin Resource Sharing) ]
+# =====================================================================
+# الهدف من هذا الجزء هو السماح لتطبيقات الواجهة الأمامية (Front-end) سواء ويب أو موبايل
+# بالاتصال المباشر مع السيرفر دون أن يتم حظرها بواسطة حماية المتصفحات القياسية.
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], # السماح باستقبال الطلبات من أي نطاق (Domain) أو جهاز
+    allow_credentials=True, # السماح بمرور بيانات المصادقة مثل الـ (Tokens/Cookies)
+    allow_methods=["*"], # السماح بجميع أنواع الطلبات (GET, POST, PUT, DELETE, etc.)
+    allow_headers=["*"], # السماح بجميع الترويسات (Headers)، وهذا ضروري جداً لتخطي شاشة ngrok التحذيرية
+)
 
 # =====================================================================
 # [ 1. تهيئة المتغيرات العالمية (Global Variables) ]
@@ -92,6 +108,71 @@ def get_mechanics_from_db(specialty: str, sub_specialty: str):
 
 
 @safe_db_call
+def search_mechanics_in_db(
+    query_keyword: Optional[str],
+    min_rating: int,
+    sort_by: str,
+    user_lat: Optional[float],
+    user_lng: Optional[float]
+):
+    """
+    محرك البحث والفلترة الخاص بالفنيين.
+    يدعم البحث بالاسم أو التخصص، والترتيب بالمسافة.
+    (تم إيقاف فلتر التقييم مؤقتاً لحين إضافة عمود Rating في قاعدة البيانات)
+    """
+    conn = pymssql.connect(
+        server=settings.DB_SERVER,
+        user=settings.DB_USER,
+        password=settings.DB_PASSWORD,
+        database=settings.DB_NAME,
+    )
+    cursor = conn.cursor(as_dict=True)
+
+    # 1. الاستعلام الأساسي (تم إيقاف شرط التقييم مؤقتاً)
+    sql = f"""
+        SELECT DISTINCT
+            u.Id AS MechanicId,
+            u.FirstName + ' ' + u.LastName AS Name,
+            u.Phone,
+            -- mp.Rating, <-- TODO: Uncomment when Rating column is added
+            0 AS Rating, -- قيمة مؤقتة (Dummy) عشان الفرونت إند ميضربش
+            s.Name AS Specialty,
+            mp.Location_Latitude AS Latitude,
+            mp.Location_Longitude AS Longitude
+        FROM dbo.Users u
+        INNER JOIN dbo.MechanicProfile mp ON u.Id = mp.UserId
+        INNER JOIN dbo.Specializations s ON mp.Id = s.MechanicProfileId
+        LEFT JOIN dbo.SubSpecializations ss ON s.Id = ss.SpecializationId
+        WHERE mp.IsAvailable = 1 
+        -- AND mp.Rating >= {min_rating} <-- TODO: Uncomment when Rating is added
+    """
+
+    # 2. فلترة بكلمة البحث (لو اليوزر كتب حاجة)
+    if query_keyword:
+        sql += f"""
+            AND (
+                u.FirstName LIKE N'%{query_keyword}%' OR 
+                u.LastName LIKE N'%{query_keyword}%' OR 
+                s.Name LIKE N'%{query_keyword}%' OR 
+                ss.Name LIKE N'%{query_keyword}%'
+            )
+        """
+
+        # 3. الترتيب (Ranking)
+        if sort_by == "distance" and user_lat and user_lng:
+            # حساب المسافة التقريبية للترتيب (الأقرب يظهر الأول)
+            sql += f" ORDER BY (POWER(mp.Location_Latitude - {user_lat}, 2) + POWER(mp.Location_Longitude - {user_lng}, 2)) ASC"
+        else:
+            # الترتيب الافتراضي مؤقتاً: الترتيب بالاسم المدمج عشان الـ DISTINCT متزعلش
+            sql += " ORDER BY Name ASC"
+
+    cursor.execute(sql)
+    results = cursor.fetchall()
+    conn.close()
+    return results
+
+
+@safe_db_call
 def get_user_context_data(user_id: str, car_id: Optional[str] = None):
     """
     استرجاع بيانات العميل والسيارة لبناء سياق محادثة مخصص (Personalized Context).
@@ -131,6 +212,54 @@ def get_user_context_data(user_id: str, car_id: Optional[str] = None):
     data = cursor.fetchone()
     conn.close()
     return data
+
+
+@safe_db_call
+def get_search_suggestions_from_db(query_keyword: str):
+    """
+    جلب اقتراحات البحث السريعة (أسماء فنيين أو تخصصات).
+    تستخدم UNION لدمج النتائج من جداول مختلفة في قائمة واحدة سريعة.
+    """
+    # لو اليوزر كتب أقل من حرفين، مش هنروح للداتا بيز عشان نوفر موارد
+    if not query_keyword or len(query_keyword) < 2:
+        return []
+
+    conn = pymssql.connect(
+        server=settings.DB_SERVER,
+        user=settings.DB_USER,
+        password=settings.DB_PASSWORD,
+        database=settings.DB_NAME,
+    )
+    cursor = conn.cursor(as_dict=True)
+
+    # بنسحب أفضل 7 اقتراحات بس عشان الـ UI ميبقاش زحمة
+    sql = f"""
+        SELECT DISTINCT TOP 7 Suggestion, Type FROM (
+            -- البحث في أسماء الفنيين المتاحين
+            SELECT (u.FirstName + ' ' + u.LastName) AS Suggestion, N'فني' AS Type 
+            FROM dbo.Users u 
+            INNER JOIN dbo.MechanicProfile mp ON u.Id = mp.UserId 
+            WHERE mp.IsAvailable = 1 AND (u.FirstName LIKE N'%{query_keyword}%' OR u.LastName LIKE N'%{query_keyword}%')
+
+            UNION
+
+            -- البحث في التخصصات العامة
+            SELECT Name AS Suggestion, N'تخصص' AS Type 
+            FROM dbo.Specializations 
+            WHERE Name LIKE N'%{query_keyword}%'
+
+            UNION
+
+            -- البحث في التخصصات الدقيقة
+            SELECT Name AS Suggestion, N'تخصص دقيق' AS Type 
+            FROM dbo.SubSpecializations 
+            WHERE Name LIKE N'%{query_keyword}%'
+        ) AS CombinedResults
+    """
+    cursor.execute(sql)
+    results = cursor.fetchall()
+    conn.close()
+    return results
 
 
 # @safe_db_call
@@ -468,3 +597,89 @@ async def submit_feedback(
             "status": "error",
             "message": "عذراً، يبدو أن هناك عطلاً بسيطاً في النظام ⚙️! لم نتمكن من حفظ تقييمك الآن.",
         }
+
+
+# =====================================================================
+# [ مسارات محرك البحث - Search Engine ]
+# =====================================================================
+@app.get("/search/mechanics")
+async def search_mechanics_endpoint(
+        q: Optional[str] = Query(None, description="كلمة البحث (اسم الفني، التخصص، أو وصف المشكلة)"),
+        min_rating: int = Query(3, description="الحد الأدنى للتقييم (الافتراضي 3 نجوم)"),
+        sort_by: str = Query("rating", description="ترتيب حسب: rating أو distance"),
+        user_lat: Optional[float] = Query(None, description="خط عرض المستخدم لحساب المسافة"),
+        user_lng: Optional[float] = Query(None, description="خط طول المستخدم لحساب المسافة")
+):
+    """
+    البحث الشامل عن الفنيين (يدعم Semantic Search للأعطال باستخدام الذكاء الاصطناعي)
+    (FR-1, FR-2, FR-4, FR-6)
+    """
+
+    # 1. حماية المدخلات (Validation)
+    if sort_by == "distance" and (user_lat is None or user_lng is None):
+        raise HTTPException(
+            status_code=400,
+            detail="عذراً، يجب إرسال إحداثيات المستخدم (user_lat و user_lng) عند اختيار الترتيب بالمسافة."
+        )
+
+    search_keyword = q
+
+    # 2. تفعيل الذكاء الاصطناعي (Semantic Search Analysis)
+    # لو اليوزر كتب جملة بتوصف عطل (كلمتين أو أكتر)، هنخلي الـ AI يستنتج التخصص
+    if q and len(q.split()) > 1:
+        try:
+            # بنبعت الجملة للـ AI (بنسيب القطعة المرشحة فاضية لأنه مجرد بحث)
+            specialty_json = await ai.extract_specialty(q, "")
+            extracted_sub = specialty_json.get("sub_specialty", "").strip()
+            extracted_spec = specialty_json.get("specialty", "").strip()
+
+            # الأولوية للتخصص الدقيق، لو مش موجود ناخد التخصص العام
+            ai_keyword = extracted_sub if extracted_sub else extracted_spec
+
+            # لو الـ AI طلع بنتيجة مفيدة، بنستبدل كلمة البحث الطويلة بالكلمة المختصرة
+            if ai_keyword and ai_keyword != "غير محدد":
+                search_keyword = ai_keyword
+                print(f"🤖 AI translated user query '{q}' to specialization: '{search_keyword}'")
+
+        except Exception as e:
+            print(f"⚠️ AI Semantic Search Error: {e}")
+            pass  # لو الـ AI عطل لأي سبب، الكود هيكمل بالكلمة اللي اليوزر كتبها (Fallback)
+
+    # 3. البحث في قاعدة البيانات
+    results = search_mechanics_in_db(search_keyword, min_rating, sort_by, user_lat, user_lng)
+
+    if results is None:
+        raise HTTPException(status_code=500, detail="حدث خطأ في الاتصال بقاعدة البيانات.")
+
+    return {
+        "status": "success",
+        "result_count": len(results),
+        "original_query": q,
+        "ai_interpreted_as": search_keyword if search_keyword != q else None,  # دي إضافة صايعة للفرونت إند
+        "data": results
+    }
+
+
+@app.get("/search/suggest")
+async def suggest_endpoint(
+        q: str = Query(..., description="الكلمة اللي اليوزر بيكتبها (حرفين على الأقل)")
+):
+    """
+    الاقتراحات التلقائية أثناء الكتابة (FR-3)
+    """
+    # بنرجع لستة فاضية لو الكلمة صغيرة جداً
+    if len(q) < 2:
+        return {
+            "status": "success",
+            "data": []
+        }
+
+    results = get_search_suggestions_from_db(q)
+
+    if results is None:
+        raise HTTPException(status_code=500, detail="حدث خطأ في الاتصال بقاعدة البيانات.")
+
+    return {
+        "status": "success",
+        "data": results
+    }
