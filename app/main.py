@@ -29,10 +29,12 @@ app = FastAPI(title="GearUp Recommendation System")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # السماح باستقبال الطلبات من أي نطاق (Domain) أو جهاز
-    allow_credentials=True, # السماح بمرور بيانات المصادقة مثل الـ (Tokens/Cookies)
-    allow_methods=["*"], # السماح بجميع أنواع الطلبات (GET, POST, PUT, DELETE, etc.)
-    allow_headers=["*"], # السماح بجميع الترويسات (Headers)، وهذا ضروري جداً لتخطي شاشة ngrok التحذيرية
+    allow_origins=["*"],  # السماح باستقبال الطلبات من أي نطاق (Domain) أو جهاز
+    allow_credentials=True,  # السماح بمرور بيانات المصادقة مثل الـ (Tokens/Cookies)
+    allow_methods=["*"],  # السماح بجميع أنواع الطلبات (GET, POST, PUT, DELETE, etc.)
+    allow_headers=[
+        "*"
+    ],  # السماح بجميع الترويسات (Headers)، وهذا ضروري جداً لتخطي شاشة ngrok التحذيرية
 )
 
 # =====================================================================
@@ -113,7 +115,7 @@ def search_mechanics_in_db(
     min_rating: int,
     sort_by: str,
     user_lat: Optional[float],
-    user_lng: Optional[float]
+    user_lng: Optional[float],
 ):
     """
     محرك البحث والفلترة الخاص بالفنيين.
@@ -309,15 +311,15 @@ async def startup_event():
 # =====================================================================
 @app.post("/recommend", response_model=RecommendationResponse)
 async def get_recommendation(
-        query_data: str = Form(...),
-        user_id: Optional[str] = Form(None),
-        car_id: Optional[str] = Form(None),
-        file: Optional[UploadFile] = File(None),
+    query_data: str = Form(...),
+    user_id: Optional[str] = Form(None),
+    car_id: Optional[str] = Form(None),
+    file: Optional[UploadFile] = File(None),
 ):
     """
-        المسار الأساسي لتحليل شكوى المستخدم:
-        يقوم بدمج البحث في المستندات (RAG) مع ذكاء Gemini لتحليل الأعطال،
-        تحديد مدى خطورتها، واقتراح فنيين أو تذكيرات صيانة.
+    المسار الأساسي لتحليل شكوى المستخدم:
+    يقوم بدمج البحث في المستندات (RAG) مع ذكاء Gemini لتحليل الأعطال،
+    تحديد مدى خطورتها، واقتراح فنيين أو تذكيرات صيانة.
     """
     try:
         # 1. تجهيز البيانات والصورة
@@ -375,21 +377,24 @@ async def get_recommendation(
             "حرارة",
             "سخونية",
             "سخونيه",
-            "بتدخن"
+            "بتدخن",
         ]
 
         # كلمات الخطر اللي بتكسر مود النصيحة (Safety First)
-        critical_safety_words = ["فرامل", "مش بتوقف", "دواسة", "دواسه", "حرارة", "حراره", "دخان", "حريقة", "خبط موتور"]
+        critical_safety_words = [
+            "فرامل",
+            "مش بتوقف",
+            "دواسة",
+            "دواسه",
+            "حرارة",
+            "حراره",
+            "دخان",
+            "حريقة",
+            "خبط موتور",
+        ]
         is_critical_danger = any(word in clean_desc for word in critical_safety_words)
 
-        greeting_keywords = [
-            "مين",
-            "عرفني",
-            "أنت",
-            "اهلا",
-            "سلام",
-            "وظيفتك"
-        ]
+        greeting_keywords = ["مين", "عرفني", "أنت", "اهلا", "سلام", "وظيفتك"]
 
         advice_keywords = [
             "اغير",
@@ -412,7 +417,7 @@ async def get_recommendation(
             "نوع",
             "انواع",
             "اختار",
-            "ايه"
+            "ايه",
         ]
 
         contains_serious_word = any(word in words_in_desc for word in serious_words)
@@ -430,10 +435,15 @@ async def get_recommendation(
         # 5. منطق التحية
         if is_greeting and not contains_serious_word and not is_critical_danger:
             instructions = "أنت GearUp AI، خبير سيارات ودود. رد بترحيب وذكر بتخصصك فقط."
-            ai_chat_answer = await ai.generate_response(messages, [user_context, instructions], image_data_url)
+            ai_chat_answer = await ai.generate_response(
+                messages, [user_context, instructions], image_data_url
+            )
             return RecommendationResponse(
-                query=description, ai_answer=ai_chat_answer, source_documents=[], requires_feedback=False
-        )
+                query=description,
+                ai_answer=ai_chat_answer,
+                source_documents=[],
+                requires_feedback=False,
+            )
 
         # 6. جلب بيانات الفنيين (بدون عرضها في نص الشات)
         unique_mechanics_list = []
@@ -442,12 +452,16 @@ async def get_recommendation(
         is_advice_mode = is_asking_for_advice and not is_critical_danger
 
         user_asking_for_workshop = any(
-            word in clean_desc for word in ["ورشة", "ميكانيكي", "فني", "تصليح", "مركز صيانة"])
+            word in clean_desc
+            for word in ["ورشة", "ميكانيكي", "فني", "تصليح", "مركز صيانة"]
+        )
 
         is_hard_issue = (
-                (difficulty == "صعب" or contains_serious_word or user_asking_for_workshop or is_critical_danger)
-                and not is_advice_mode
-        )
+            difficulty == "صعب"
+            or contains_serious_word
+            or user_asking_for_workshop
+            or is_critical_danger
+        ) and not is_advice_mode
 
         # التعديل: بنجيب البيانات من الـ DB بس مش بنحولها لـ Text (mechanics_text)
         if is_hard_issue:
@@ -467,7 +481,12 @@ async def get_recommendation(
 
         # 7. بناء الرد النهائي وتوجيه الـ AI
         offers_reminder_flag = False
-        auto_fill_data = {"service_type": None, "required_service": None, "location": None, "gps": False}
+        auto_fill_data = {
+            "service_type": None,
+            "required_service": None,
+            "location": None,
+            "gps": False,
+        }
 
         if is_advice_mode:
             instructions = f"{user_context} قدم نصائح صيانة دورية وودية واعرض إنشاء تذكير. لا تذكر أي فنيين."
@@ -477,7 +496,7 @@ async def get_recommendation(
                 "service_type": "خدمة طارئة",
                 "required_service": "تشخيص",
                 "location": "ميكانيكي متنقل",
-                "gps": True
+                "gps": True,
             }
             # التعديل هنا: الـ AI بيقول إن فيه فنيين متاحين بس ميعرضش بياناتهم (الفرونت هيعرض الزرار)
             instructions = (
@@ -487,24 +506,76 @@ async def get_recommendation(
                 f"وانصحه بالضغط على زر 'حجز خدمة طارئة' للمتابعة. ممنوع ذكر أسماء أو أرقام تليفونات الفنيين."
             )
         else:
-            instructions = f"{user_context} الحل بسيط: {suggested_solution}. التنسيق: خطوات الحل."
+            instructions = (
+                f"{user_context} الحل بسيط: {suggested_solution}. التنسيق: خطوات الحل."
+            )
 
-        ai_final_answer = await ai.generate_response(messages, [instructions], image_data_url)
+        ai_final_answer = await ai.generate_response(
+            messages, [instructions], image_data_url
+        )
 
         # 8. استخراج التذكير
         reminder_fields = [None] * 6
         if offers_reminder_flag:
             r_data = await ai.extract_reminder_details(ai_final_answer)
             reminder_fields = [
-                r_data.get("title"), r_data.get("description"), r_data.get("frequency"),
-                r_data.get("suggested_date"), None, r_data.get("notification_time")
+                r_data.get("title"),
+                r_data.get("description"),
+                r_data.get("frequency"),
+                r_data.get("suggested_date"),
+                None,
+                r_data.get("notification_time"),
             ]
+
+        spare_parts_recommendations = []
+        external_search_links = []
+        car_info = user_data.get("Brand", "سيارة") if user_data else "سيارة"
+
+        # لو المشكلة مش مجرد تحية وفيها قطعة مرشحة من الـ RAG
+        # --- [الإصلاح النهائي لظهور اللينكات] ---
+        if not is_greeting and suggested_part != "غير محدد":
+            try:
+                # 1. التأكد إن القيمة نص (لو لستة ناخد أول عنصر)
+                part_text = (
+                    suggested_part[0]
+                    if isinstance(suggested_part, list)
+                    else suggested_part
+                )
+
+                # 2. تنظيف اسم القطعة (أول كلمة قبل أي سلاش أو مسافة)
+                clean_part = part_text.replace("/", " ").split()[0]
+
+                # 3. بناء جملة البحث
+                raw_search = f"{clean_part} {car_info}"
+                search_query = raw_search.replace(" ", "+")
+
+                # 4. اللينكات المباشرة
+                external_search_links = [
+                    {
+                        "site": "Amazon Egypt",
+                        "url": f"https://www.amazon.eg/s?k={search_query}",
+                    },
+                    {
+                        "site": "Tawfikia",
+                        "url": f"https://tawfikia.com/search?q={search_query}",
+                    },
+                ]
+
+                # 5. قائمة القطع
+                spare_parts_recommendations = [
+                    f"طقم {clean_part}",
+                    f"حساس {clean_part}",
+                ]
+            except Exception as e:
+                print(f" Spare parts error: {e}")
 
         return RecommendationResponse(
             query=description,
             ai_answer=ai_final_answer,
             source_documents=[top_case] if not is_hard_issue else [],
-            requires_feedback=is_advice_mode or offers_reminder_flag or (not is_hard_issue),
+            requires_feedback=is_advice_mode
+            or offers_reminder_flag
+            or (not is_hard_issue),
             requires_mechanic=is_hard_issue,
             is_advice_mode=is_advice_mode,
             offers_reminder=offers_reminder_flag,
@@ -521,6 +592,9 @@ async def get_recommendation(
             suggested_frequency=reminder_fields[2],
             suggested_date=reminder_fields[3],
             notification_time=reminder_fields[5],
+            recommended_spare_parts=spare_parts_recommendations,
+            external_links=external_search_links,
+            car_brand=user_data.get("Brand") if user_data else None,
         )
 
     except Exception as e:
@@ -584,7 +658,7 @@ async def submit_feedback(
         if is_helpful:
             response_message = (
                 "شكراً لتقييمك الإيجابي! رأيك يساعدنا على تطوير GearUp للأفضل. 🚀"
-)
+            )
         else:
             response_message = "نعتذر إن لم تكن الإجابة مفيدة بالقدر الكافي. نقدر لك هذا التقييم، وسنعمل جاهدين على التعلم منه وتحسين جودة ردودنا في المرات القادمة. 🛠️"
 
@@ -604,11 +678,17 @@ async def submit_feedback(
 # =====================================================================
 @app.get("/search/mechanics")
 async def search_mechanics_endpoint(
-        q: Optional[str] = Query(None, description="كلمة البحث (اسم الفني، التخصص، أو وصف المشكلة)"),
-        min_rating: int = Query(3, description="الحد الأدنى للتقييم (الافتراضي 3 نجوم)"),
-        sort_by: str = Query("rating", description="ترتيب حسب: rating أو distance"),
-        user_lat: Optional[float] = Query(None, description="خط عرض المستخدم لحساب المسافة"),
-        user_lng: Optional[float] = Query(None, description="خط طول المستخدم لحساب المسافة")
+    q: Optional[str] = Query(
+        None, description="كلمة البحث (اسم الفني، التخصص، أو وصف المشكلة)"
+    ),
+    min_rating: int = Query(3, description="الحد الأدنى للتقييم (الافتراضي 3 نجوم)"),
+    sort_by: str = Query("rating", description="ترتيب حسب: rating أو distance"),
+    user_lat: Optional[float] = Query(
+        None, description="خط عرض المستخدم لحساب المسافة"
+    ),
+    user_lng: Optional[float] = Query(
+        None, description="خط طول المستخدم لحساب المسافة"
+    ),
 ):
     """
     البحث الشامل عن الفنيين (يدعم Semantic Search للأعطال باستخدام الذكاء الاصطناعي)
@@ -619,7 +699,7 @@ async def search_mechanics_endpoint(
     if sort_by == "distance" and (user_lat is None or user_lng is None):
         raise HTTPException(
             status_code=400,
-            detail="عذراً، يجب إرسال إحداثيات المستخدم (user_lat و user_lng) عند اختيار الترتيب بالمسافة."
+            detail="عذراً، يجب إرسال إحداثيات المستخدم (user_lat و user_lng) عند اختيار الترتيب بالمسافة.",
         )
 
     search_keyword = q
@@ -639,47 +719,51 @@ async def search_mechanics_endpoint(
             # لو الـ AI طلع بنتيجة مفيدة، بنستبدل كلمة البحث الطويلة بالكلمة المختصرة
             if ai_keyword and ai_keyword != "غير محدد":
                 search_keyword = ai_keyword
-                print(f"🤖 AI translated user query '{q}' to specialization: '{search_keyword}'")
+                print(
+                    f"🤖 AI translated user query '{q}' to specialization: '{search_keyword}'"
+                )
 
         except Exception as e:
             print(f"⚠️ AI Semantic Search Error: {e}")
             pass  # لو الـ AI عطل لأي سبب، الكود هيكمل بالكلمة اللي اليوزر كتبها (Fallback)
 
     # 3. البحث في قاعدة البيانات
-    results = search_mechanics_in_db(search_keyword, min_rating, sort_by, user_lat, user_lng)
+    results = search_mechanics_in_db(
+        search_keyword, min_rating, sort_by, user_lat, user_lng
+    )
 
     if results is None:
-        raise HTTPException(status_code=500, detail="حدث خطأ في الاتصال بقاعدة البيانات.")
+        raise HTTPException(
+            status_code=500, detail="حدث خطأ في الاتصال بقاعدة البيانات."
+        )
 
     return {
         "status": "success",
         "result_count": len(results),
         "original_query": q,
-        "ai_interpreted_as": search_keyword if search_keyword != q else None,  # دي إضافة صايعة للفرونت إند
-        "data": results
+        "ai_interpreted_as": (
+            search_keyword if search_keyword != q else None
+        ),  # دي إضافة صايعة للفرونت إند
+        "data": results,
     }
 
 
 @app.get("/search/suggest")
 async def suggest_endpoint(
-        q: str = Query(..., description="الكلمة اللي اليوزر بيكتبها (حرفين على الأقل)")
+    q: str = Query(..., description="الكلمة اللي اليوزر بيكتبها (حرفين على الأقل)")
 ):
     """
     الاقتراحات التلقائية أثناء الكتابة (FR-3)
     """
     # بنرجع لستة فاضية لو الكلمة صغيرة جداً
     if len(q) < 2:
-        return {
-            "status": "success",
-            "data": []
-        }
+        return {"status": "success", "data": []}
 
     results = get_search_suggestions_from_db(q)
 
     if results is None:
-        raise HTTPException(status_code=500, detail="حدث خطأ في الاتصال بقاعدة البيانات.")
+        raise HTTPException(
+            status_code=500, detail="حدث خطأ في الاتصال بقاعدة البيانات."
+        )
 
-    return {
-        "status": "success",
-        "data": results
-    }
+    return {"status": "success", "data": results}

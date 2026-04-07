@@ -4,6 +4,7 @@ from openai import OpenAI
 from app.models import Message
 from app.config import settings
 from datetime import datetime, timedelta
+from app.local_llm import simple_llm_service
 
 
 class AIService:
@@ -13,7 +14,8 @@ class AIService:
     """
 
     # الموديل المستقر
-    DEFAULT_MODEL = "google/gemini-2.0-flash-001"
+    # DEFAULT_MODEL = "google/gemini-2.0-flash-001"
+    DEFAULT_MODEL = "openrouter/auto"
 
     def __init__(self):
         self.client = OpenAI(
@@ -64,8 +66,32 @@ class AIService:
             )
             return response.choices[0].message.content
         except Exception as e:
-            print(f"❌ [AI Generate Error]: {e}")
-            return "عذراً، واجهت مشكلة تقنية. يرجى المحاولة لاحقاً."
+            print(f"❌ [AI Generate Error]: {e} - Falling back to local model...")
+            try:
+                prompt = ""
+                for msg in formatted_messages:
+                    if isinstance(msg["content"], list):
+                        text_parts = [
+                            p["text"] for p in msg["content"] if p["type"] == "text"
+                        ]
+                        content = " ".join(text_parts)
+                    else:
+                        content = msg["content"]
+
+                    role = (
+                        "Assistant"
+                        if msg["role"] == "assistant"
+                        else "User" if msg["role"] == "user" else "System"
+                    )
+                    prompt += f"{role}: {content}\n"
+                prompt += "Assistant: "
+
+                return simple_llm_service.generate(
+                    prompt=prompt, max_tokens=512, temperature=0.5
+                )
+            except Exception as local_e:
+                print(f"❌ [Local LLM Generate Error]: {local_e}")
+                return "عذراً، واجهت الخوادم الرئيسية والبديلة مشكلة تقنية. يرجى المحاولة لاحقاً."
 
     # 2. محرك استخراج التخصص (الربط مع الميكانيكي)
     async def extract_specialty(self, description: str, suggested_part: str) -> dict:
@@ -99,8 +125,20 @@ class AIService:
                 .strip()
             )
             return json.loads(clean_json)
-        except:
-            return {"specialty": "ميكانيكا", "sub_specialty": "عام"}
+        except Exception as e:
+            print(f"❌ [AI Extract Error]: {e} - Falling back to local model...")
+            try:
+                prompt = f"System: {system_prompt}\nUser: {user_prompt}\nAssistant: "
+                local_resp = simple_llm_service.generate(
+                    prompt=prompt, max_tokens=200, temperature=0.0
+                )
+                clean_json = (
+                    local_resp.replace("```json", "").replace("```", "").strip()
+                )
+                return json.loads(clean_json)
+            except Exception as local_e:
+                print(f"❌ [Local LLM Extract Error]: {local_e}")
+                return {"specialty": "ميكانيكا", "sub_specialty": "عام"}
 
     # 3. محرك استخراج بيانات التذكير
     async def extract_reminder_details(self, ai_answer: str) -> dict:
@@ -130,13 +168,54 @@ class AIService:
                 .strip()
             )
             return json.loads(clean_json)
+        except Exception as e:
+            print(
+                f"❌ [AI Extract Reminder Error]: {e} - Falling back to local model..."
+            )
+            try:
+                local_prompt = f"User: {prompt}\nAssistant: "
+                local_resp = simple_llm_service.generate(
+                    prompt=local_prompt, max_tokens=300, temperature=0.0
+                )
+                clean_json = (
+                    local_resp.replace("```json", "").replace("```", "").strip()
+                )
+                return json.loads(clean_json)
+            except Exception as local_e:
+                print(f"❌ [Local LLM Extract Reminder Error]: {local_e}")
+                return {
+                    "title": "تذكير صيانة",
+                    "description": "فحص دوري للسيارة",
+                    "frequency": "مرة واحدة فقط",
+                    "suggested_date": (datetime.now() + timedelta(days=7)).strftime(
+                        "%Y/%m/%d"
+                    ),
+                    "notification_time": "10:00 AM",
+                }
+
+    # --- إضافة جديدة لتحقيق الـ FR-5 والـ FR-6 ---
+    async def get_personalized_recommendations(
+        self, user_car_model: str, problem_type: str
+    ) -> dict:
+        """
+        بناءً على موديل العربية (FR-5) ونوع المشكلة، بنقترح ميكانيكي وقطع غيار (FR-6)
+        """
+        prompt = f"""
+    المستخدم عنده عربية {user_car_model} وبيشتكي من {problem_type}.
+    1. اقترح تخصص الميكانيكي المناسب.
+    2. اقترح قطع الغيار اللي ممكن يحتاجها.
+    3. هات لينكات بحث (Search Links) لقطع الغيار دي على Amazon.eg.
+    رد بصيغة JSON فقط.
+    """
+        try:
+            # بننادي على الموديل اللي إنتي مثبتاه (OpenRouter Auto)
+            response = self.client.chat.completions.create(
+                model=self.DEFAULT_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+            )
+
+            return json.loads(response.choices[0].message.content)
         except:
-            return {
-                "title": "تذكير صيانة",
-                "description": "فحص دوري للسيارة",
-                "frequency": "مرة واحدة فقط",
-                "suggested_date": (datetime.now() + timedelta(days=7)).strftime(
-                    "%Y/%m/%d"
-                ),
-                "notification_time": "10:00 AM",
-            }
+            # لو حصل أي مشكلة، بنرجع داتا فاضية وما بنبوظش السيرفر
+            return {"suggested_parts": [], "mechanic_type": "عام"}
