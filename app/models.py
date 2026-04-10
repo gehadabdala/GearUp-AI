@@ -101,3 +101,13 @@ class ApprovalResponse(BaseModel):
         str  # التبرير أو النصائح المستخرجة من الوثيقة (مثل: "الرخصة منتهية الصلاحية")
     )
     score: int  # نسبة الثقة في جودة وصحة المستند (0-100)
+
+
+class SaveReminderRequest(BaseModel):
+    user_id: str
+    car_id: str
+    title: str
+    description: Optional[str] = None
+    suggested_date: str
+    frequency: Optional[str] = None
+    notification_time: Optional[str] = "09:00"

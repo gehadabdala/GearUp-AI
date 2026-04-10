@@ -9,6 +9,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 import pymssql
 import functools
+
+from sympy import re
 from app.config import settings
 from app.approval_service import ApprovalService
 from app.models import (
@@ -17,7 +19,9 @@ from app.models import (
     QueryRequest,
     ApprovalRequest,
     ApprovalResponse,
+    SaveReminderRequest,
 )
+
 
 app = FastAPI(title="GearUp Recommendation System")
 
@@ -258,8 +262,13 @@ def get_search_suggestions_from_db(query_keyword: str):
             WHERE Name LIKE N'%{query_keyword}%'
         ) AS CombinedResults
     """
+    print(f"--- Debugging Suggestion Query ---")
+    print(f"Keyword: {query_keyword}")
     cursor.execute(sql)
     results = cursor.fetchall()
+    print(
+        f"Raw Results from DB: {results}"
+    )  # لو ده طلع [] يبقى الداتا مش موجودة في الـ DB أو الشرط غلط
     conn.close()
     return results
 
@@ -287,6 +296,32 @@ def get_search_suggestions_from_db(query_keyword: str):
 #     schedules = cursor.fetchall()
 #     conn.close()
 #     return schedules
+
+
+@safe_db_call
+def add_reminder_to_db(user_id, car_id, title, desc, r_date, freq, n_time):
+    conn = pymssql.connect(
+        server=settings.DB_SERVER,
+        user=settings.DB_USER,
+        password=settings.DB_PASSWORD,
+        database=settings.DB_NAME,
+    )
+    cursor = conn.cursor()
+
+    # الـ Query دي فيها كل الأعمدة الإلزامية اللي الداتا بيز طلبتها لحد دلوقتي
+    query = """
+        INSERT INTO dbo.Reminders 
+        (Id, UserId, CarId, Name, Description, ScheduleStartDate, FrequencyType, 
+         ScheduleAdvanceNoticeDays, NotificationsEnabled, NotificationChannels, 
+         StatusType, StatusReason, StatusLastModified, CreatedAt, UpdatedAt)
+        VALUES (NEWID(), %s, %s, %s, %s, %s, %s, 3, 1, 'Push', 'Pending', 'AI Generated', GETDATE(), GETDATE(), GETDATE())
+    """
+
+    cursor.execute(query, (user_id, car_id, title, desc, r_date, freq))
+
+    conn.commit()
+    conn.close()
+    return True
 
 
 # =====================================================================
@@ -517,15 +552,36 @@ async def get_recommendation(
         # 8. استخراج التذكير
         reminder_fields = [None] * 6
         if offers_reminder_flag:
-            r_data = await ai.extract_reminder_details(ai_final_answer)
-            reminder_fields = [
-                r_data.get("title"),
-                r_data.get("description"),
-                r_data.get("frequency"),
-                r_data.get("suggested_date"),
-                None,
-                r_data.get("notification_time"),
-            ]
+            try:
+                r_data = await ai.extract_reminder_details(ai_final_answer)
+                reminder_fields = [
+                    r_data.get("title"),
+                    r_data.get("description"),
+                    r_data.get("frequency"),
+                    r_data.get("suggested_date"),
+                    None,
+                    r_data.get("notification_time"),
+                ]
+
+                if r_data.get("title") and user_id and car_id:
+                    # تنظيف التاريخ (تبديل / بـ -) عشان الـ SQL بيفهمها كدة
+                    db_date = r_data.get("suggested_date", "").replace("/", "-")
+
+                    add_reminder_to_db(
+                        user_id=user_id,
+                        car_id=car_id,
+                        title=r_data.get("title"),
+                        desc=r_data.get("description"),
+                        r_date=db_date,
+                        freq=r_data.get("frequency", "مرة واحدة"),
+                        n_time=r_data.get("notification_time", "10:00 AM"),
+                    )
+                    print(
+                        f"✅ [Auto-Save] Reminder '{r_data.get('title')}' saved for user {user_id}"
+                    )
+
+            except Exception as re:
+                print(f"⚠️ Error in auto-saving reminder: {re}")
 
         spare_parts_recommendations = []
         external_search_links = []
@@ -543,7 +599,7 @@ async def get_recommendation(
                 )
 
                 # 2. تنظيف اسم القطعة (أول كلمة قبل أي سلاش أو مسافة)
-                clean_part = part_text.replace("/", " ").split()[0]
+                clean_part = str(part_text).split("/")[0].strip()
 
                 # 3. بناء جملة البحث
                 raw_search = f"{clean_part} {car_info}"
@@ -767,3 +823,28 @@ async def suggest_endpoint(
         )
 
     return {"status": "success", "data": results}
+
+
+@app.post("/reminders/save")
+async def save_maintenance_reminder(request: SaveReminderRequest):
+    """
+    حفظ التذكير الذي اقترحه الـ AI في قاعدة البيانات (SQL Server)
+    """
+    # استدعاء الدالة التنفيذية
+    result = add_reminder_to_db(
+        request.user_id,
+        request.car_id,
+        request.title,
+        request.description,
+        request.suggested_date,
+        request.frequency,
+        request.notification_time,
+    )
+
+    if result:
+        return {"status": "success", "message": "تم حفظ التذكير بنجاح يا جيهاد! 🛠️"}
+    else:
+        # لو الـ safe_db_call رجعت None بسبب error
+        raise HTTPException(
+            status_code=500, detail="عذراً، فشل الاتصال بقاعدة البيانات لحفظ التذكير."
+        )
