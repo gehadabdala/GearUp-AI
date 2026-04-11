@@ -262,31 +262,6 @@ def get_search_suggestions_from_db(query_keyword: str):
     return results
 
 
-# @safe_db_call
-# def get_mechanic_schedule(mechanic_name: str):
-#     """دالة لجلب المواعيد المتاحة لميكانيكي محدد بالاسم (محمية)"""
-#     conn = pymssql.connect(
-#         server=settings.DB_SERVER,
-#         user=settings.DB_USER,
-#         password=settings.DB_PASSWORD,
-#         database=settings.DB_NAME,
-#     )
-#     cursor = conn.cursor(as_dict=True)
-#
-#     query = f"""
-#         SELECT AvailableDate, StartTime, EndTime
-#         FROM dbo.MechanicSchedules ms
-#         INNER JOIN dbo.MechanicProfile mp ON ms.MechanicProfileId = mp.Id
-#         INNER JOIN dbo.Users u ON mp.UserId = u.Id
-#         WHERE (u.FirstName + ' ' + u.LastName) LIKE N'%{mechanic_name}%'
-#         AND ms.IsBooked = 0
-#     """
-#     cursor.execute(query)
-#     schedules = cursor.fetchall()
-#     conn.close()
-#     return schedules
-
-
 # =====================================================================
 # [ 3. أحداث بدء التشغيل (Startup Events) ]
 # =====================================================================
@@ -339,87 +314,16 @@ async def get_recommendation(
             car_brand = user_data.get("Brand", "")
             user_context = f"[معلومة سرية: اسم المستخدم {f_name}، سيارته {car_brand}. استخدم صيغة المذكر/المؤنث الصح.]"
 
-        # 3. الكلمات المفتاحية وتنظيف النص
-        clean_desc = description.lower().replace("أ", "ا").replace("إ", "ا").strip()
-        words_in_desc = clean_desc.split()
+        # 3. تحليل النية بالذكاء الاصطناعي
+        intent_data = await ai.analyze_intent(description)
+        is_emergency = intent_data.get("is_emergency", False)
+        is_advice = intent_data.get("is_advice", False)
+        is_greeting = intent_data.get("is_greeting", False)
+        needs_mechanic = intent_data.get("needs_mechanic", False)
 
-        serious_words = [
-            "فتيس",
-            "موتور",
-            "محرك",
-            "ناقل حركة",
-            "جير",
-            "فرامل",
-            "زيت",
-            "دخان",
-            "صوت",
-            "خبط",
-            "شياط",
-            "ريحة",
-            "ريحه",
-            "بيسرب",
-            "تسريب",
-            "بينقط",
-            "تنقيط",
-            "بيحدف",
-            "تحدف",
-            "تيل",
-            "طنابير",
-            "طنبور",
-            "كاوتش",
-            "عجلة",
-            "انفجار",
-            "دواسة",
-            "بنزين",
-            "حراره",
-            "حرارة",
-            "سخونية",
-            "سخونيه",
-            "بتدخن"
-        ]
+        print(f"🧠 AI Intent Analysis: {intent_data}")
 
-        # كلمات الخطر اللي بتكسر مود النصيحة (Safety First)
-        critical_safety_words = ["فرامل", "مش بتوقف", "دواسة", "دواسه", "حرارة", "حراره", "دخان", "حريقة", "خبط موتور"]
-        is_critical_danger = any(word in clean_desc for word in critical_safety_words)
-
-        greeting_keywords = [
-            "مين",
-            "عرفني",
-            "أنت",
-            "اهلا",
-            "سلام",
-            "وظيفتك"
-        ]
-
-        advice_keywords = [
-            "اغير",
-            "امتى",
-            "متى",
-            "موعد",
-            "صيانه",
-            "صيانة",
-            "كل قد ايه",
-            "احافظ",
-            "اهتم",
-            "نصيحة",
-            "نصايح",
-            "تنصحني",
-            # الكلمات الجديدة اللي هنضيفها هنا:
-            "احسن",
-            "أحسن",
-            "افضل",
-            "أفضل",
-            "نوع",
-            "انواع",
-            "اختار",
-            "ايه"
-        ]
-
-        contains_serious_word = any(word in words_in_desc for word in serious_words)
-        is_greeting = any(word in words_in_desc for word in greeting_keywords)
-        is_asking_for_advice = any(word in clean_desc for word in advice_keywords)
-
-        # 4. البحث في RAG
+        # 4. البحث في RAG (لجلب بيانات العطل التقنية)
         search_results = db.search(description, n_results=1)
         metadata_list = search_results["metadatas"][0]
         top_case = metadata_list[0]
@@ -428,28 +332,27 @@ async def get_recommendation(
         suggested_solution = top_case.get("الحل المقترح", "يرجى الفحص")
 
         # 5. منطق التحية
-        if is_greeting and not contains_serious_word and not is_critical_danger:
+        if is_greeting and not is_emergency and not needs_mechanic:
             instructions = "أنت GearUp AI، خبير سيارات ودود. رد بترحيب وذكر بتخصصك فقط."
             ai_chat_answer = await ai.generate_response(messages, [user_context, instructions], image_data_url)
             return RecommendationResponse(
                 query=description, ai_answer=ai_chat_answer, source_documents=[], requires_feedback=False
-        )
+            )
 
-        # 6. جلب بيانات الفنيين (بدون عرضها في نص الشات)
+        # 6. جلب بيانات الفنيين بناءً على تحليل الـ AI
         unique_mechanics_list = []
-
-        # الأولوية: لو فيه خطر حقيقي، بنلغي "مود النصيحة" عشان الميكانيكية يظهروا
-        is_advice_mode = is_asking_for_advice and not is_critical_danger
+        is_advice_mode = is_advice and not is_emergency
 
         user_asking_for_workshop = any(
-            word in clean_desc for word in ["ورشة", "ميكانيكي", "فني", "تصليح", "مركز صيانة"])
-
-        is_hard_issue = (
-                (difficulty == "صعب" or contains_serious_word or user_asking_for_workshop or is_critical_danger)
-                and not is_advice_mode
+            word in description.lower() for word in ["ورشة", "ميكانيكي", "فني", "تصليح", "مركز صيانة"]
         )
 
-        # التعديل: بنجيب البيانات من الـ DB بس مش بنحولها لـ Text (mechanics_text)
+        is_hard_issue = (
+            (difficulty == "صعب" or needs_mechanic or is_emergency or user_asking_for_workshop)
+            and not is_advice_mode
+        )
+
+        # استخراج التخصص وجلب الفنيين
         if is_hard_issue:
             specialty_json = await ai.extract_specialty(description, suggested_part)
             mechanics_list = get_mechanics_from_db(
@@ -470,24 +373,43 @@ async def get_recommendation(
         auto_fill_data = {"service_type": None, "required_service": None, "location": None, "gps": False}
 
         if is_advice_mode:
+            # حالة 1: نصيحة عامة
             instructions = f"{user_context} قدم نصائح صيانة دورية وودية واعرض إنشاء تذكير. لا تذكر أي فنيين."
             offers_reminder_flag = True
-        elif is_hard_issue:
+
+        elif is_emergency:
+            # حالة 2: طوارئ حقيقية 🔴
             auto_fill_data = {
                 "service_type": "خدمة طارئة",
-                "required_service": "تشخيص",
+                "required_service": "إنقاذ وتطوير",
                 "location": "ميكانيكي متنقل",
                 "gps": True
             }
-            # التعديل هنا: الـ AI بيقول إن فيه فنيين متاحين بس ميعرضش بياناتهم (الفرونت هيعرض الزرار)
             instructions = (
-                f"أنت خبير طوارئ. {user_context}. حذر المستخدم فوراً لو الحالة خطيرة (مثل مشاكل الفرامل). "
+                f"أنت خبير طوارئ سيارات. {user_context}. حافظ على نبرة هادئة ومطمئنة ('سلامتك أهم'). "
                 f"الحل المقترح حالياً: {suggested_solution}. "
-                f"أخبر المستخدم بوضوح أن هناك فنيين متخصصين متاحين على منصة GearUp يمكنهم مساعدته فوراً، "
-                f"وانصحه بالضغط على زر 'حجز خدمة طارئة' للمتابعة. ممنوع ذكر أسماء أو أرقام تليفونات الفنيين."
+                f"قدم خطوات أمان فورية، ثم أخبر المستخدم بوضوح أن هناك فريق إنقاذ متاح الآن، "
+                f"وانصحه بالضغط على زر 'حجز خدمة طارئة' للمتابعة فوراً. ممنوع ذكر أسماء فنيين."
             )
+
+        elif is_hard_issue:
+            # حالة 3: عطل محتاج ميكانيكي بس مش طوارئ 🟡
+            auto_fill_data = {
+                "service_type": "حجز ورشة",
+                "required_service": "فحص وإصلاح",
+                "location": "ورشة الفني",
+                "gps": False
+            }
+            instructions = (
+                f"أنت خبير سيارات. {user_context}. العطل يحتاج لتدخل فني ولكنه ليس حالة طوارئ خطيرة. "
+                f"الحل المقترح: {suggested_solution}. "
+                f"اشرح المشكلة ببساطة، وأخبر المستخدم أنه يمكنه حجز موعد مع فني متخصص الآن، "
+                f"وانصحه بالضغط على زر 'حجز فني' الموجود أمامه. ممنوع إثارة الذعر."
+            )
+
         else:
-            instructions = f"{user_context} الحل بسيط: {suggested_solution}. التنسيق: خطوات الحل."
+            # حالة 4: عطل بسيط ممكن اليوزر يعمله بنفسه 🟢
+            instructions = f"{user_context} المشكلة بسيطة ويمكن حلها. الحل المقترح: {suggested_solution}. التنسيق: خطوات الحل."
 
         ai_final_answer = await ai.generate_response(messages, [instructions], image_data_url)
 
@@ -506,6 +428,7 @@ async def get_recommendation(
             source_documents=[top_case] if not is_hard_issue else [],
             requires_feedback=is_advice_mode or offers_reminder_flag or (not is_hard_issue),
             requires_mechanic=is_hard_issue,
+            is_emergency=is_emergency,
             is_advice_mode=is_advice_mode,
             offers_reminder=offers_reminder_flag,
             recommended_mechanics=unique_mechanics_list,
@@ -600,86 +523,113 @@ async def submit_feedback(
 
 
 # =====================================================================
-# [ مسارات محرك البحث - Search Engine ]
+# [ 5. مسارات محرك البحث - Search Engine ]
 # =====================================================================
-@app.get("/search/mechanics")
+
+@app.get("/search/mechanics", response_model=dict)
 async def search_mechanics_endpoint(
         q: Optional[str] = Query(None, description="كلمة البحث (اسم الفني، التخصص، أو وصف المشكلة)"),
         min_rating: int = Query(3, description="الحد الأدنى للتقييم (الافتراضي 3 نجوم)"),
         sort_by: str = Query("rating", description="ترتيب حسب: rating أو distance"),
-        user_lat: Optional[float] = Query(None, description="خط عرض المستخدم لحساب المسافة"),
-        user_lng: Optional[float] = Query(None, description="خط طول المستخدم لحساب المسافة")
+        user_lat: Optional[float] = Query(None, description="خط عرض المستخدم"),
+        user_lng: Optional[float] = Query(None, description="خط طول المستخدم")
 ):
     """
-    البحث الشامل عن الفنيين (يدعم Semantic Search للأعطال باستخدام الذكاء الاصطناعي)
-    (FR-1, FR-2, FR-4, FR-6)
+    البحث الشامل عن الفنيين (يدعم البحث الدلالي Semantic Search للأعطال)
+    المتطلبات المغطاة: (FR-1, FR-2, FR-4, FR-6)
     """
 
-    # 1. حماية المدخلات (Validation)
+    # 1. التحقق من صحة البيانات (Validation)
     if sort_by == "distance" and (user_lat is None or user_lng is None):
         raise HTTPException(
             status_code=400,
-            detail="عذراً، يجب إرسال إحداثيات المستخدم (user_lat و user_lng) عند اختيار الترتيب بالمسافة."
+            detail="عذراً، يجب إرسال إحداثيات الموقع (GPS) عند اختيار الترتيب حسب المسافة."
         )
 
     search_keyword = q
 
-    # 2. تفعيل الذكاء الاصطناعي (Semantic Search Analysis)
-    # لو اليوزر كتب جملة بتوصف عطل (كلمتين أو أكتر)، هنخلي الـ AI يستنتج التخصص
+    # 2. تحليل البحث باستخدام الذكاء الاصطناعي (Semantic Search)
+    # لو المستخدم كتب وصف لعطل (أكثر من كلمة واحدة)، الـ AI بيستنتج التخصص
     if q and len(q.split()) > 1:
         try:
-            # بنبعت الجملة للـ AI (بنسيب القطعة المرشحة فاضية لأنه مجرد بحث)
             specialty_json = await ai.extract_specialty(q, "")
             extracted_sub = specialty_json.get("sub_specialty", "").strip()
             extracted_spec = specialty_json.get("specialty", "").strip()
 
-            # الأولوية للتخصص الدقيق، لو مش موجود ناخد التخصص العام
+            # الأولوية للتخصص الدقيق، ثم العام
             ai_keyword = extracted_sub if extracted_sub else extracted_spec
 
-            # لو الـ AI طلع بنتيجة مفيدة، بنستبدل كلمة البحث الطويلة بالكلمة المختصرة
             if ai_keyword and ai_keyword != "غير محدد":
                 search_keyword = ai_keyword
-                print(f"🤖 AI translated user query '{q}' to specialization: '{search_keyword}'")
-
+                print(f"🤖 AI interpreted: '{q}' -> '{search_keyword}'")
         except Exception as e:
-            print(f"⚠️ AI Semantic Search Error: {e}")
-            pass  # لو الـ AI عطل لأي سبب، الكود هيكمل بالكلمة اللي اليوزر كتبها (Fallback)
+            print(f"⚠️ AI Search Error: {e}")
 
-    # 3. البحث في قاعدة البيانات
+    # 3. جلب النتائج من قاعدة البيانات
     results = search_mechanics_in_db(search_keyword, min_rating, sort_by, user_lat, user_lng)
 
     if results is None:
-        raise HTTPException(status_code=500, detail="حدث خطأ في الاتصال بقاعدة البيانات.")
+        raise HTTPException(status_code=500, detail="خطأ في الوصول لقاعدة البيانات.")
 
     return {
         "status": "success",
         "result_count": len(results),
-        "original_query": q,
-        "ai_interpreted_as": search_keyword if search_keyword != q else None,  # دي إضافة صايعة للفرونت إند
+        "ai_interpreted_as": search_keyword if search_keyword != q else None,
         "data": results
     }
 
 
 @app.get("/search/suggest")
 async def suggest_endpoint(
-        q: str = Query(..., description="الكلمة اللي اليوزر بيكتبها (حرفين على الأقل)")
+        q: str = Query(..., description="الكلمة التي يكتبها المستخدم (حرفين فأكثر)")
 ):
-    """
-    الاقتراحات التلقائية أثناء الكتابة (FR-3)
-    """
-    # بنرجع لستة فاضية لو الكلمة صغيرة جداً
+    """ الاقتراحات التلقائية أثناء الكتابة (FR-3) """
     if len(q) < 2:
-        return {
-            "status": "success",
-            "data": []
-        }
+        return {"status": "success", "data": []}
 
     results = get_search_suggestions_from_db(q)
 
     if results is None:
-        raise HTTPException(status_code=500, detail="حدث خطأ في الاتصال بقاعدة البيانات.")
+        raise HTTPException(status_code=500, detail="خطأ في جلب الاقتراحات.")
 
-    return {
-        "status": "success",
-        "data": results
-    }
+    return {"status": "success", "data": results}
+
+
+# =====================================================================
+# [ 6. تفاصيل الفني - Detailed View (FR-5) ]
+# =====================================================================
+
+@app.get("/mechanic/{mechanic_id}")
+async def get_mechanic_details(mechanic_id: str):
+    """ جلب البيانات الكاملة للفني عند اختياره من النتائج (FR-5) """
+    try:
+        conn = pymssql.connect(
+            server=settings.DB_SERVER,
+            user=settings.DB_USER,
+            password=settings.DB_PASSWORD,
+            database=settings.DB_NAME,
+        )
+        cursor = conn.cursor(as_dict=True)
+
+        sql = f"""
+            SELECT 
+                u.Id, u.FirstName + ' ' + u.LastName AS FullName, u.Phone, u.Email,
+                mp.Location_Latitude, mp.Location_Longitude, mp.YearsOfExperience,
+                mp.Bio, 0 AS Rating, s.Name AS Specialty
+            FROM dbo.Users u
+            INNER JOIN dbo.MechanicProfile mp ON u.Id = mp.UserId
+            LEFT JOIN dbo.Specializations s ON mp.Id = s.MechanicProfileId
+            WHERE u.Id = '{mechanic_id}'
+        """
+        cursor.execute(sql)
+        mechanic = cursor.fetchone()
+        conn.close()
+
+        if not mechanic:
+            raise HTTPException(status_code=404, detail="الفني غير موجود.")
+
+        return {"status": "success", "data": mechanic}
+
+    except Exception as e:
+        print(f"❌ Detail View Error: {e}")
+        raise HTTPException(status_code=500, detail="حدث خطأ أثناء جلب التفاصيل.")
