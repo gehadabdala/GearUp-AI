@@ -37,7 +37,6 @@ class RecommendationResponse(BaseModel):
     source_documents: List[dict]    # الحالات المشابهة المستخرجة من قاعدة البيانات (RAG)
 
     # --- علامات التحكم المنطقية لواجهة المستخدم (UI Logical Control Flags) ---
-    is_emergency: bool = False      # هل الرد حالة طوارئ؟
     is_advice_mode: bool = False    # هل الرد مجرد نصيحة عامة؟ (True تعني إيقاف وضع الطوارئ)
     requires_mechanic: bool = False # هل الحالة تستدعي إظهار زر "اطلب فني طوارئ الآن"؟
     offers_reminder: bool = False   # هل الحالة تسمح بإظهار زر "جدولة تذكير صيانة"؟

@@ -9,6 +9,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 import pymssql
 import functools
+
+from sympy import re
 from app.config import settings
 from app.approval_service import ApprovalService
 from app.models import (
@@ -17,7 +19,9 @@ from app.models import (
     QueryRequest,
     ApprovalRequest,
     ApprovalResponse,
+    SaveReminderRequest,
 )
+
 
 app = FastAPI(title="GearUp Recommendation System")
 
@@ -29,10 +33,12 @@ app = FastAPI(title="GearUp Recommendation System")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # السماح باستقبال الطلبات من أي نطاق (Domain) أو جهاز
-    allow_credentials=True, # السماح بمرور بيانات المصادقة مثل الـ (Tokens/Cookies)
-    allow_methods=["*"], # السماح بجميع أنواع الطلبات (GET, POST, PUT, DELETE, etc.)
-    allow_headers=["*"], # السماح بجميع الترويسات (Headers)، وهذا ضروري جداً لتخطي شاشة ngrok التحذيرية
+    allow_origins=["*"],  # السماح باستقبال الطلبات من أي نطاق (Domain) أو جهاز
+    allow_credentials=True,  # السماح بمرور بيانات المصادقة مثل الـ (Tokens/Cookies)
+    allow_methods=["*"],  # السماح بجميع أنواع الطلبات (GET, POST, PUT, DELETE, etc.)
+    allow_headers=[
+        "*"
+    ],  # السماح بجميع الترويسات (Headers)، وهذا ضروري جداً لتخطي شاشة ngrok التحذيرية
 )
 
 # =====================================================================
@@ -113,7 +119,7 @@ def search_mechanics_in_db(
     min_rating: int,
     sort_by: str,
     user_lat: Optional[float],
-    user_lng: Optional[float]
+    user_lng: Optional[float],
 ):
     """
     محرك البحث والفلترة الخاص بالفنيين.
@@ -256,10 +262,66 @@ def get_search_suggestions_from_db(query_keyword: str):
             WHERE Name LIKE N'%{query_keyword}%'
         ) AS CombinedResults
     """
+    print(f"--- Debugging Suggestion Query ---")
+    print(f"Keyword: {query_keyword}")
     cursor.execute(sql)
     results = cursor.fetchall()
+    print(
+        f"Raw Results from DB: {results}"
+    )  # لو ده طلع [] يبقى الداتا مش موجودة في الـ DB أو الشرط غلط
     conn.close()
     return results
+
+
+# @safe_db_call
+# def get_mechanic_schedule(mechanic_name: str):
+#     """دالة لجلب المواعيد المتاحة لميكانيكي محدد بالاسم (محمية)"""
+#     conn = pymssql.connect(
+#         server=settings.DB_SERVER,
+#         user=settings.DB_USER,
+#         password=settings.DB_PASSWORD,
+#         database=settings.DB_NAME,
+#     )
+#     cursor = conn.cursor(as_dict=True)
+#
+#     query = f"""
+#         SELECT AvailableDate, StartTime, EndTime
+#         FROM dbo.MechanicSchedules ms
+#         INNER JOIN dbo.MechanicProfile mp ON ms.MechanicProfileId = mp.Id
+#         INNER JOIN dbo.Users u ON mp.UserId = u.Id
+#         WHERE (u.FirstName + ' ' + u.LastName) LIKE N'%{mechanic_name}%'
+#         AND ms.IsBooked = 0
+#     """
+#     cursor.execute(query)
+#     schedules = cursor.fetchall()
+#     conn.close()
+#     return schedules
+
+
+# @safe_db_call
+# def add_reminder_to_db(user_id, car_id, title, desc, r_date, freq, n_time):
+#     conn = pymssql.connect(
+#         server=settings.DB_SERVER,
+#         user=settings.DB_USER,
+#         password=settings.DB_PASSWORD,
+#         database=settings.DB_NAME,
+#     )
+#     cursor = conn.cursor()
+#
+#     # الـ Query دي فيها كل الأعمدة الإلزامية اللي الداتا بيز طلبتها لحد دلوقتي
+#     query = """
+#         INSERT INTO dbo.Reminders
+#         (Id, UserId, CarId, Name, Description, ScheduleStartDate, FrequencyType,
+#          ScheduleAdvanceNoticeDays, NotificationsEnabled, NotificationChannels,
+#          StatusType, StatusReason, StatusLastModified, CreatedAt, UpdatedAt)
+#         VALUES (NEWID(), %s, %s, %s, %s, %s, %s, 3, 1, 'Push', 'Pending', 'AI Generated', GETDATE(), GETDATE(), GETDATE())
+#     """
+#
+#     cursor.execute(query, (user_id, car_id, title, desc, r_date, freq))
+#
+#     conn.commit()
+#     conn.close()
+#     return True
 
 
 # =====================================================================
@@ -290,9 +352,9 @@ async def get_recommendation(
         file: Optional[UploadFile] = File(None),
 ):
     """
-        المسار الأساسي لتحليل شكوى المستخدم:
-        يقوم بدمج البحث في المستندات (RAG) مع ذكاء Gemini لتحليل الأعطال،
-        تحديد مدى خطورتها، واقتراح فنيين أو تذكيرات صيانة.
+    المسار الأساسي لتحليل شكوى المستخدم:
+    يقوم بدمج البحث في المستندات (RAG) مع ذكاء Gemini لتحليل الأعطال،
+    تحديد مدى خطورتها، واقتراح فنيين، تذكيرات صيانة، وقطع غيار.
     """
     try:
         # 1. تجهيز البيانات والصورة
@@ -309,12 +371,15 @@ async def get_recommendation(
         # 2. جلب سياق المستخدم
         user_data = get_user_context_data(user_id, car_id)
         user_context = ""
+        car_info = "سيارة"  # حفظناها عشان نستخدمها في قطع الغيار (من كود زميلتك)
+
         if user_data:
             f_name = user_data.get("FirstName", "يا صديقي")
             car_brand = user_data.get("Brand", "")
+            car_info = car_brand if car_brand else "سيارة"
             user_context = f"[معلومة سرية: اسم المستخدم {f_name}، سيارته {car_brand}. استخدم صيغة المذكر/المؤنث الصح.]"
 
-        # 3. تحليل النية بالذكاء الاصطناعي
+        # 3. تحليل النية بالذكاء الاصطناعي (اللوجيك النظيف بتاعك - بدون كلمات محفوظة)
         intent_data = await ai.analyze_intent(description)
         is_emergency = intent_data.get("is_emergency", False)
         is_advice = intent_data.get("is_advice", False)
@@ -348,8 +413,8 @@ async def get_recommendation(
         )
 
         is_hard_issue = (
-            (difficulty == "صعب" or needs_mechanic or is_emergency or user_asking_for_workshop)
-            and not is_advice_mode
+                (difficulty == "صعب" or needs_mechanic or is_emergency or user_asking_for_workshop)
+                and not is_advice_mode
         )
 
         # استخراج التخصص وجلب الفنيين
@@ -378,18 +443,18 @@ async def get_recommendation(
             offers_reminder_flag = True
 
         elif is_emergency:
-            # حالة 2: طوارئ حقيقية 🔴
+            # حالة 2: طوارئ حقيقية 🔴 (بتحذير الأمان الصارم بتاعك لمنع فتح الكبوت)
             auto_fill_data = {
                 "service_type": "خدمة طارئة",
-                "required_service": "إنقاذ وتطوير",
+                "required_service": "إنقاذ وقطر",
                 "location": "ميكانيكي متنقل",
                 "gps": True
             }
             instructions = (
-                f"أنت خبير طوارئ سيارات. {user_context}. حافظ على نبرة هادئة ومطمئنة ('سلامتك أهم'). "
-                f"الحل المقترح حالياً: {suggested_solution}. "
-                f"قدم خطوات أمان فورية، ثم أخبر المستخدم بوضوح أن هناك فريق إنقاذ متاح الآن، "
-                f"وانصحه بالضغط على زر 'حجز خدمة طارئة' للمتابعة فوراً. ممنوع ذكر أسماء فنيين."
+                f"أنت خبير طوارئ سيارات. {user_context}. حافظ على نبرة هادئة ومطمئنة ('سلامتك أهم من أي شيء'). "
+                f"قدم فقط إجراءات الأمان الفورية (مثل: التوقف على يمين الطريق، إطفاء المحرك، الابتعاد عن السيارة). "
+                f"⚠️ تحذير صارم: ممنوع منعاً باتاً أن تطلب من المستخدم القيام بأي خطوات فحص (مثل فتح الكبوت، أو فحص المياه/الزيت) لأن ذلك يشكل خطراً كبيراً على حياته الآن. "
+                f"بعد إجراءات الأمان، وجهه مباشرة وبشكل حاسم للضغط على زر 'حجز خدمة طارئة' لإرسال فريق إنقاذ فوراً. لا تذكر أسماء فنيين."
             )
 
         elif is_hard_issue:
@@ -416,12 +481,50 @@ async def get_recommendation(
         # 8. استخراج التذكير
         reminder_fields = [None] * 6
         if offers_reminder_flag:
-            r_data = await ai.extract_reminder_details(ai_final_answer)
-            reminder_fields = [
-                r_data.get("title"), r_data.get("description"), r_data.get("frequency"),
-                r_data.get("suggested_date"), None, r_data.get("notification_time")
-            ]
+            try:
+                r_data = await ai.extract_reminder_details(ai_final_answer)
+                reminder_fields = [
+                    r_data.get("title"),
+                    r_data.get("description"),
+                    r_data.get("frequency"),
+                    r_data.get("suggested_date"),
+                    None,
+                    r_data.get("notification_time")
+                ]
+                print(f"✅ [AI Extraction] Reminder details extracted successfully for frontend.")
 
+            except Exception as re:
+                print(f"⚠️ Error in extracting reminder details: {re}")
+
+        # 9. ترشيحات قطع الغيار واللينكات (شغل زميلتك بالكامل)
+        spare_parts_recommendations = []
+        external_search_links = []
+
+        if not is_greeting and suggested_part != "غير محدد":
+            try:
+                # 1. التأكد إن القيمة نص
+                part_text = suggested_part[0] if isinstance(suggested_part, list) else suggested_part
+
+                # 2. تنظيف اسم القطعة
+                clean_part = str(part_text).split("/")[0].strip()
+
+                # 3. بناء جملة البحث
+                raw_search = f"{clean_part} {car_info}"
+                search_query = raw_search.replace(" ", "+")
+
+                # 4. اللينكات المباشرة
+                external_search_links = [
+                    {"site": "Amazon Egypt", "url": f"https://www.amazon.eg/s?k={search_query}"},
+                    {"site": "Tawfikia", "url": f"https://tawfikia.com/search?q={search_query}"},
+                ]
+
+                # 5. قائمة القطع
+                spare_parts_recommendations = [f"طقم {clean_part}", f"حساس {clean_part}"]
+
+            except Exception as e:
+                print(f"⚠️ Spare parts error: {e}")
+
+        # 10. إرجاع النتيجة للفرونت إند (شاملة كل الحقول)
         return RecommendationResponse(
             query=description,
             ai_answer=ai_final_answer,
@@ -444,6 +547,9 @@ async def get_recommendation(
             suggested_frequency=reminder_fields[2],
             suggested_date=reminder_fields[3],
             notification_time=reminder_fields[5],
+            recommended_spare_parts=spare_parts_recommendations,
+            external_links=external_search_links,
+            car_brand=car_info if car_info != "سيارة" else None,
         )
 
     except Exception as e:
@@ -507,7 +613,7 @@ async def submit_feedback(
         if is_helpful:
             response_message = (
                 "شكراً لتقييمك الإيجابي! رأيك يساعدنا على تطوير GearUp للأفضل. 🚀"
-)
+            )
         else:
             response_message = "نعتذر إن لم تكن الإجابة مفيدة بالقدر الكافي. نقدر لك هذا التقييم، وسنعمل جاهدين على التعلم منه وتحسين جودة ردودنا في المرات القادمة. 🛠️"
 
@@ -523,16 +629,15 @@ async def submit_feedback(
 
 
 # =====================================================================
-# [ 5. مسارات محرك البحث - Search Engine ]
+# [ 7. مسارات محرك البحث - Search Engine ]
 # =====================================================================
-
 @app.get("/search/mechanics", response_model=dict)
 async def search_mechanics_endpoint(
-        q: Optional[str] = Query(None, description="كلمة البحث (اسم الفني، التخصص، أو وصف المشكلة)"),
-        min_rating: int = Query(3, description="الحد الأدنى للتقييم (الافتراضي 3 نجوم)"),
-        sort_by: str = Query("rating", description="ترتيب حسب: rating أو distance"),
-        user_lat: Optional[float] = Query(None, description="خط عرض المستخدم"),
-        user_lng: Optional[float] = Query(None, description="خط طول المستخدم")
+    q: Optional[str] = Query(None, description="كلمة البحث (اسم الفني، التخصص، أو وصف المشكلة)"),
+    min_rating: int = Query(3, description="الحد الأدنى للتقييم (الافتراضي 3 نجوم)"),
+    sort_by: str = Query("rating", description="ترتيب حسب: rating أو distance"),
+    user_lat: Optional[float] = Query(None, description="خط عرض المستخدم لحساب المسافة"),
+    user_lng: Optional[float] = Query(None, description="خط طول المستخدم لحساب المسافة")
 ):
     """
     البحث الشامل عن الفنيين (يدعم البحث الدلالي Semantic Search للأعطال)
@@ -549,7 +654,6 @@ async def search_mechanics_endpoint(
     search_keyword = q
 
     # 2. تحليل البحث باستخدام الذكاء الاصطناعي (Semantic Search)
-    # لو المستخدم كتب وصف لعطل (أكثر من كلمة واحدة)، الـ AI بيستنتج التخصص
     if q and len(q.split()) > 1:
         try:
             specialty_json = await ai.extract_specialty(q, "")
@@ -561,7 +665,8 @@ async def search_mechanics_endpoint(
 
             if ai_keyword and ai_keyword != "غير محدد":
                 search_keyword = ai_keyword
-                print(f"🤖 AI interpreted: '{q}' -> '{search_keyword}'")
+                print(f"🤖 AI translated user query '{q}' to specialization: '{search_keyword}'")
+
         except Exception as e:
             print(f"⚠️ AI Search Error: {e}")
 
@@ -569,11 +674,12 @@ async def search_mechanics_endpoint(
     results = search_mechanics_in_db(search_keyword, min_rating, sort_by, user_lat, user_lng)
 
     if results is None:
-        raise HTTPException(status_code=500, detail="خطأ في الوصول لقاعدة البيانات.")
+        raise HTTPException(status_code=500, detail="حدث خطأ في الاتصال بقاعدة البيانات.")
 
     return {
         "status": "success",
         "result_count": len(results),
+        "original_query": q,
         "ai_interpreted_as": search_keyword if search_keyword != q else None,
         "data": results
     }
@@ -581,7 +687,7 @@ async def search_mechanics_endpoint(
 
 @app.get("/search/suggest")
 async def suggest_endpoint(
-        q: str = Query(..., description="الكلمة التي يكتبها المستخدم (حرفين فأكثر)")
+    q: str = Query(..., description="الكلمة اللي اليوزر بيكتبها (حرفين على الأقل)")
 ):
     """ الاقتراحات التلقائية أثناء الكتابة (FR-3) """
     if len(q) < 2:
@@ -590,15 +696,14 @@ async def suggest_endpoint(
     results = get_search_suggestions_from_db(q)
 
     if results is None:
-        raise HTTPException(status_code=500, detail="خطأ في جلب الاقتراحات.")
+        raise HTTPException(status_code=500, detail="حدث خطأ في الاتصال بقاعدة البيانات.")
 
     return {"status": "success", "data": results}
 
 
 # =====================================================================
-# [ 6. تفاصيل الفني - Detailed View (FR-5) ]
+# [ 8. تفاصيل الفني - Detailed View (FR-5) ]
 # =====================================================================
-
 @app.get("/mechanic/{mechanic_id}")
 async def get_mechanic_details(mechanic_id: str):
     """ جلب البيانات الكاملة للفني عند اختياره من النتائج (FR-5) """
@@ -633,3 +738,29 @@ async def get_mechanic_details(mechanic_id: str):
     except Exception as e:
         print(f"❌ Detail View Error: {e}")
         raise HTTPException(status_code=500, detail="حدث خطأ أثناء جلب التفاصيل.")
+
+
+# # =====================================================================
+# # [ 9. حفظ التذكيرات - Save Reminders ]
+# # =====================================================================
+# @app.post("/reminders/save")
+# async def save_maintenance_reminder(request: SaveReminderRequest):
+#     """
+#     حفظ التذكير الذي اقترحه الـ AI في قاعدة البيانات (SQL Server)
+#     """
+#     result = add_reminder_to_db(
+#         request.user_id,
+#         request.car_id,
+#         request.title,
+#         request.description,
+#         request.suggested_date,
+#         request.frequency,
+#         request.notification_time,
+#     )
+#
+#     if result:
+#         return {"status": "success", "message": "تم حفظ التذكير بنجاح يا جيهاد! 🛠️"}
+#     else:
+#         raise HTTPException(
+#             status_code=500, detail="عذراً، فشل الاتصال بقاعدة البيانات لحفظ التذكير."
+#         )
