@@ -19,7 +19,6 @@ from app.models import (
     QueryRequest,
     ApprovalRequest,
     ApprovalResponse,
-    SaveReminderRequest,
 )
 
 
@@ -351,11 +350,6 @@ async def get_recommendation(
         car_id: Optional[str] = Form(None),
         file: Optional[UploadFile] = File(None),
 ):
-    """
-    المسار الأساسي لتحليل شكوى المستخدم:
-    يقوم بدمج البحث في المستندات (RAG) مع ذكاء Gemini لتحليل الأعطال،
-    تحديد مدى خطورتها، واقتراح فنيين، تذكيرات صيانة، وقطع غيار.
-    """
     try:
         # 1. تجهيز البيانات والصورة
         data_dict = json.loads(query_data)
@@ -371,30 +365,32 @@ async def get_recommendation(
         # 2. جلب سياق المستخدم
         user_data = get_user_context_data(user_id, car_id)
         user_context = ""
-        car_info = "سيارة"  # حفظناها عشان نستخدمها في قطع الغيار (من كود زميلتك)
-
+        car_info = "سيارة"
         if user_data:
             f_name = user_data.get("FirstName", "يا صديقي")
             car_brand = user_data.get("Brand", "")
             car_info = car_brand if car_brand else "سيارة"
             user_context = f"[معلومة سرية: اسم المستخدم {f_name}، سيارته {car_brand}. استخدم صيغة المذكر/المؤنث الصح.]"
 
-        # 3. تحليل النية بالذكاء الاصطناعي (اللوجيك النظيف بتاعك - بدون كلمات محفوظة)
+        # 3. تحليل النية بالذكاء الاصطناعي (مع حماية صارمة للأنواع المنطقية)
         intent_data = await ai.analyze_intent(description)
-        is_emergency = intent_data.get("is_emergency", False)
-        is_advice = intent_data.get("is_advice", False)
-        is_greeting = intent_data.get("is_greeting", False)
-        needs_mechanic = intent_data.get("needs_mechanic", False)
 
-        print(f"🧠 AI Intent Analysis: {intent_data}")
+        # تحويل أي ناتج (سواء String أو Bool) لقيمة منطقية حقيقية
+        is_emergency = str(intent_data.get("is_emergency", False)).lower() == "true"
+        is_advice = str(intent_data.get("is_advice", False)).lower() == "true"
+        is_greeting = str(intent_data.get("is_greeting", False)).lower() == "true"
+        needs_mechanic = str(intent_data.get("needs_mechanic", False)).lower() == "true"
 
-        # 4. البحث في RAG (لجلب بيانات العطل التقنية)
+        print(f"🧠 AI Intent Analysis: Emergency={is_emergency}, Advice={is_advice}, Mechanic={needs_mechanic}")
+
+        # 4. البحث في RAG
         search_results = db.search(description, n_results=1)
         metadata_list = search_results["metadatas"][0]
         top_case = metadata_list[0]
-        difficulty = str(top_case.get("مستوى الصعوبة", "سهل")).strip()
-        suggested_part = top_case.get("القطعة المرشحة", "غير محدد")
-        suggested_solution = top_case.get("الحل المقترح", "يرجى الفحص")
+
+        difficulty = str(top_case.get("مستوى الصعوبة", top_case.get("difficulty", "سهل"))).strip()
+        suggested_solution = top_case.get("الحل المقترح", top_case.get("solution", "يرجى الفحص"))
+        suggested_part = top_case.get("القطعة المرشحة", top_case.get("parts", "غير محدد"))
 
         # 5. منطق التحية
         if is_greeting and not is_emergency and not needs_mechanic:
@@ -404,27 +400,41 @@ async def get_recommendation(
                 query=description, ai_answer=ai_chat_answer, source_documents=[], requires_feedback=False
             )
 
-        # 6. جلب بيانات الفنيين بناءً على تحليل الـ AI
+        # 6. جلب ترشيحات قطع الغيار الذكية (باستخدام الـ AI)
+        spare_parts_recommendations = []
+        external_search_links = []
+
+        if not is_greeting and not is_emergency:
+            try:
+                parts_data = await ai.get_personalized_recommendations(car_info, description)
+
+                # تخزين القطع
+                spare_parts_recommendations = parts_data.get("suggested_parts", [])
+                if not spare_parts_recommendations:
+                    # لو الموديل سماها اسم تاني زي spare_parts أو parts
+                    spare_parts_recommendations = parts_data.get("spare_parts", parts_data.get("parts", []))
+
+                # تخزين اللينكات
+                raw_links = parts_data.get("search_links", parts_data.get("external_links", []))
+                if isinstance(raw_links, list):
+                    external_search_links = raw_links
+            except Exception as e:
+                print(f"⚠️ Error fetching personalized parts: {e}")
+
+        # 7. جلب بيانات الفنيين
         unique_mechanics_list = []
         is_advice_mode = is_advice and not is_emergency
-
         user_asking_for_workshop = any(
-            word in description.lower() for word in ["ورشة", "ميكانيكي", "فني", "تصليح", "مركز صيانة"]
-        )
+            word in description.lower() for word in ["ورشة", "ميكانيكي", "فني", "تصليح", "مركز صيانة"])
+        is_hard_issue = ((
+                                     difficulty == "صعب" or needs_mechanic or is_emergency or user_asking_for_workshop) and not is_advice_mode)
 
-        is_hard_issue = (
-                (difficulty == "صعب" or needs_mechanic or is_emergency or user_asking_for_workshop)
-                and not is_advice_mode
-        )
-
-        # استخراج التخصص وجلب الفنيين
         if is_hard_issue:
             specialty_json = await ai.extract_specialty(description, suggested_part)
             mechanics_list = get_mechanics_from_db(
                 specialty_json.get("specialty", "ميكانيكا"),
                 specialty_json.get("sub_specialty", ""),
             )
-
             if mechanics_list:
                 seen_ids = set()
                 for m in mechanics_list:
@@ -433,98 +443,55 @@ async def get_recommendation(
                         unique_mechanics_list.append(m)
                         seen_ids.add(m_id)
 
-        # 7. بناء الرد النهائي وتوجيه الـ AI
+        # 8. بناء الرد النهائي وتوجيه الـ AI
         offers_reminder_flag = False
         auto_fill_data = {"service_type": None, "required_service": None, "location": None, "gps": False}
 
+        # تلميح للـ AI عشان ينطق بقطع الغيار
+        parts_hint = ""
+        if spare_parts_recommendations:
+            parts_hint = f"\nقم باقتراح قطع الغيار التالية للمستخدم بأسلوب جذاب: {', '.join(spare_parts_recommendations)}."
+
         if is_advice_mode:
-            # حالة 1: نصيحة عامة
-            instructions = f"{user_context} قدم نصائح صيانة دورية وودية واعرض إنشاء تذكير. لا تذكر أي فنيين."
+            instructions = f"{user_context} قدم نصائح صيانة دورية وودية واعرض إنشاء تذكير. {parts_hint} لا تذكر أي فنيين."
             offers_reminder_flag = True
 
         elif is_emergency:
-            # حالة 2: طوارئ حقيقية 🔴 (بتحذير الأمان الصارم بتاعك لمنع فتح الكبوت)
-            auto_fill_data = {
-                "service_type": "خدمة طارئة",
-                "required_service": "إنقاذ وقطر",
-                "location": "ميكانيكي متنقل",
-                "gps": True
-            }
+            auto_fill_data = {"service_type": "خدمة طارئة", "required_service": "إنقاذ وقطر",
+                              "location": "ميكانيكي متنقل", "gps": True}
             instructions = (
                 f"أنت خبير طوارئ سيارات. {user_context}. حافظ على نبرة هادئة ومطمئنة ('سلامتك أهم من أي شيء'). "
-                f"قدم فقط إجراءات الأمان الفورية (مثل: التوقف على يمين الطريق، إطفاء المحرك، الابتعاد عن السيارة). "
-                f"⚠️ تحذير صارم: ممنوع منعاً باتاً أن تطلب من المستخدم القيام بأي خطوات فحص (مثل فتح الكبوت، أو فحص المياه/الزيت) لأن ذلك يشكل خطراً كبيراً على حياته الآن. "
-                f"بعد إجراءات الأمان، وجهه مباشرة وبشكل حاسم للضغط على زر 'حجز خدمة طارئة' لإرسال فريق إنقاذ فوراً. لا تذكر أسماء فنيين."
+                f"قدم فقط إجراءات الأمان الفورية (مثل: التوقف على يمين الطريق، إطفاء المحرك). "
+                f"⚠️ تحذير صارم: ممنوع منعاً باتاً أن تطلب من المستخدم القيام بأي خطوات فحص. "
+                f"بعد إجراءات الأمان، وجهه مباشرة للضغط على زر 'حجز خدمة طارئة'. لا تذكر أسماء فنيين."
             )
 
         elif is_hard_issue:
-            # حالة 3: عطل محتاج ميكانيكي بس مش طوارئ 🟡
-            auto_fill_data = {
-                "service_type": "حجز ورشة",
-                "required_service": "فحص وإصلاح",
-                "location": "ورشة الفني",
-                "gps": False
-            }
+            auto_fill_data = {"service_type": "حجز ورشة", "required_service": "فحص وإصلاح", "location": "ورشة الفني",
+                              "gps": False}
             instructions = (
                 f"أنت خبير سيارات. {user_context}. العطل يحتاج لتدخل فني ولكنه ليس حالة طوارئ خطيرة. "
-                f"الحل المقترح: {suggested_solution}. "
-                f"اشرح المشكلة ببساطة، وأخبر المستخدم أنه يمكنه حجز موعد مع فني متخصص الآن، "
-                f"وانصحه بالضغط على زر 'حجز فني' الموجود أمامه. ممنوع إثارة الذعر."
+                f"الحل المقترح: {suggested_solution}. {parts_hint} اشرح المشكلة ببساطة ووجهه لزر 'حجز فني'."
             )
 
         else:
-            # حالة 4: عطل بسيط ممكن اليوزر يعمله بنفسه 🟢
-            instructions = f"{user_context} المشكلة بسيطة ويمكن حلها. الحل المقترح: {suggested_solution}. التنسيق: خطوات الحل."
+            instructions = f"{user_context} المشكلة بسيطة ويمكن حلها. الحل المقترح: {suggested_solution}. {parts_hint} التنسيق: خطوات الحل."
 
         ai_final_answer = await ai.generate_response(messages, [instructions], image_data_url)
 
-        # 8. استخراج التذكير
+        # 9. استخراج التذكير وتجهيزه للفرونت إند
         reminder_fields = [None] * 6
         if offers_reminder_flag:
             try:
                 r_data = await ai.extract_reminder_details(ai_final_answer)
                 reminder_fields = [
-                    r_data.get("title"),
-                    r_data.get("description"),
-                    r_data.get("frequency"),
-                    r_data.get("suggested_date"),
-                    None,
-                    r_data.get("notification_time")
+                    r_data.get("title"), r_data.get("description"), r_data.get("frequency"),
+                    r_data.get("suggested_date"), None, r_data.get("notification_time")
                 ]
-                print(f"✅ [AI Extraction] Reminder details extracted successfully for frontend.")
-
             except Exception as re:
                 print(f"⚠️ Error in extracting reminder details: {re}")
 
-        # 9. ترشيحات قطع الغيار واللينكات (شغل زميلتك بالكامل)
-        spare_parts_recommendations = []
-        external_search_links = []
-
-        if not is_greeting and suggested_part != "غير محدد":
-            try:
-                # 1. التأكد إن القيمة نص
-                part_text = suggested_part[0] if isinstance(suggested_part, list) else suggested_part
-
-                # 2. تنظيف اسم القطعة
-                clean_part = str(part_text).split("/")[0].strip()
-
-                # 3. بناء جملة البحث
-                raw_search = f"{clean_part} {car_info}"
-                search_query = raw_search.replace(" ", "+")
-
-                # 4. اللينكات المباشرة
-                external_search_links = [
-                    {"site": "Amazon Egypt", "url": f"https://www.amazon.eg/s?k={search_query}"},
-                    {"site": "Tawfikia", "url": f"https://tawfikia.com/search?q={search_query}"},
-                ]
-
-                # 5. قائمة القطع
-                spare_parts_recommendations = [f"طقم {clean_part}", f"حساس {clean_part}"]
-
-            except Exception as e:
-                print(f"⚠️ Spare parts error: {e}")
-
-        # 10. إرجاع النتيجة للفرونت إند (شاملة كل الحقول)
+        # 10. إرجاع النتيجة
         return RecommendationResponse(
             query=description,
             ai_answer=ai_final_answer,
