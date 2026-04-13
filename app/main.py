@@ -506,15 +506,24 @@ async def get_recommendation(
             )
 
         elif is_hard_issue:
+            # 🟡 مسار الحجز العادي (Standard Booking) - متوافق مع شاشة الـ UI
+
+            # بنجيب التخصص اللي الـ AI استخرجه فوق عشان نملى بيه حقل "نوع الخدمة"
+            service_specialty = "فحص شامل"
+            if 'specialty_json' in locals() and specialty_json:
+                service_specialty = specialty_json.get("specialty", "فحص شامل")
+
             auto_fill_data = {
-                "service_type": "حجز ورشة",
-                "required_service": "فحص وإصلاح",
-                "location": "ورشة الفني",
+                "service_type": "حجز موعد",  # دي الكلمة اللي الفرونت هيعرف منها يفتح شاشة الـ Booking
+                "required_service": service_specialty,  # دي هتملا دروب داون "نوع الخدمة"
+                "location": "في الورشة",
                 "gps": False,
             }
             instructions = (
                 f"أنت خبير سيارات. {user_context}. العطل يحتاج لتدخل فني ولكنه ليس حالة طوارئ خطيرة. "
-                f"الحل المقترح: {suggested_solution}. {parts_hint} اشرح المشكلة ببساطة ووجهه لزر 'حجز فني'."
+                f"الحل المقترح: {suggested_solution}. {parts_hint} "
+                f"اشرح المشكلة ببساطة، ووجه المستخدم بوضوح للضغط على زر 'إضافة حجز جديد' "
+                f"لاختيار موعد وتاريخ مناسبين لزيارة الورشة. ممنوع إثارة الذعر."
             )
 
         else:
