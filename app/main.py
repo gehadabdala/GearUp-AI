@@ -72,26 +72,20 @@ def safe_db_call(func):
 @safe_db_call
 def get_mechanics_from_db(specialty: str, sub_specialty: str):
     """
-    جلب أفضل 3 فنيين متاحين بناءً على التخصص.
-    المنطق (Logic): يتم إعطاء أولوية (Rank 1) للمتخصص في العطل الدقيق (مثلاً فرامل)،
-    ثم (Rank 2) للمتخصص العام (عفشة).
+        جلب أفضل 3 فنيين متاحين بناءً على التخصص.
+        المنطق (Logic): يتم إعطاء أولوية (Rank 1) للمتخصص في العطل الدقيق (مثلاً فرامل)،
+        ثم (Rank 2) للمتخصص العام (عفشة).
     """
+
     conn = pymssql.connect(
-        server=settings.DB_SERVER,
-        user=settings.DB_USER,
-        password=settings.DB_PASSWORD,
-        database=settings.DB_NAME,
+        server=settings.DB_SERVER, user=settings.DB_USER, password=settings.DB_PASSWORD, database=settings.DB_NAME
     )
     cursor = conn.cursor(as_dict=True)
-
     query = f"""
                 SELECT DISTINCT TOP 3 
-                    u.Id AS MechanicId,
-                    u.FirstName + ' ' + u.LastName AS Name, 
-                    u.Phone, 
-                    mp.Location_Latitude AS Latitude,
-                    mp.Location_Longitude AS Longitude,
-                    -- نظام التقييم لترتيب الفنيين الأنسب أولاً
+                    u.Id AS MechanicId, u.FirstName + ' ' + u.LastName AS Name, u.Phone, 
+                    mp.Location_Latitude AS Latitude, mp.Location_Longitude AS Longitude,
+                    ss.Name AS SubSpecialty, -- أضفنا التخصص الفرعي هنا
                     CASE 
                         WHEN ss.Name LIKE N'%{sub_specialty}%' THEN 1 
                         WHEN s.Name LIKE N'%{specialty}%' THEN 2    
@@ -101,9 +95,8 @@ def get_mechanics_from_db(specialty: str, sub_specialty: str):
                 INNER JOIN dbo.MechanicProfile mp ON u.Id = mp.UserId
                 INNER JOIN dbo.Specializations s ON mp.Id = s.MechanicProfileId
                 LEFT JOIN dbo.SubSpecializations ss ON s.Id = ss.SpecializationId
-                WHERE 
-                    mp.IsAvailable = 1 -- الفني متاح حالياً
-                    AND (s.Name LIKE N'%{specialty}%' OR ss.Name LIKE N'%{sub_specialty}%')
+                WHERE mp.IsAvailable = 1 
+                AND (s.Name LIKE N'%{specialty}%' OR ss.Name LIKE N'%{sub_specialty}%')
                 ORDER BY Rank 
             """
     cursor.execute(query)
@@ -125,6 +118,7 @@ def search_mechanics_in_db(
     يدعم البحث بالاسم أو التخصص، والترتيب بالمسافة.
     (تم إيقاف فلتر التقييم مؤقتاً لحين إضافة عمود Rating في قاعدة البيانات)
     """
+
     conn = pymssql.connect(
         server=settings.DB_SERVER,
         user=settings.DB_USER,
@@ -453,11 +447,11 @@ async def get_recommendation(
             for word in ["ورشة", "ميكانيكي", "فني", "تصليح", "مركز صيانة"]
         )
         is_hard_issue = (
-            difficulty == "صعب"
-            or needs_mechanic
-            or is_emergency
-            or user_asking_for_workshop
-        ) and not is_advice_mode
+                                difficulty == "صعب"
+                                or needs_mechanic
+                                or is_emergency
+                                or user_asking_for_workshop
+                        ) and not is_advice_mode
 
         if is_hard_issue:
             specialty_json = await ai.extract_specialty(description, suggested_part)
@@ -508,14 +502,19 @@ async def get_recommendation(
         elif is_hard_issue:
             # 🟡 مسار الحجز العادي (Standard Booking) - متوافق مع شاشة الـ UI
 
-            # بنجيب التخصص اللي الـ AI استخرجه فوق عشان نملى بيه حقل "نوع الخدمة"
-            service_specialty = "فحص شامل"
+            # بنجيب التخصص الدقيق عشان نملى بيه حقل "نوع الخدمة"
+            service_to_fill = "فحص شامل"
             if 'specialty_json' in locals() and specialty_json:
-                service_specialty = specialty_json.get("specialty", "فحص شامل")
+                # 1. بنحاول ناخد التخصص الفرعي الأول (عشان يكون دقيق جداً)
+                service_to_fill = specialty_json.get("sub_specialty")
+
+                # 2. لو مفيش تخصص فرعي أو راجع بكلمة "غير محدد"، بناخد التخصص الأساسي
+                if not service_to_fill or service_to_fill == "غير محدد":
+                    service_to_fill = specialty_json.get("specialty", "فحص شامل")
 
             auto_fill_data = {
-                "service_type": "حجز موعد",  # دي الكلمة اللي الفرونت هيعرف منها يفتح شاشة الـ Booking
-                "required_service": service_specialty,  # دي هتملا دروب داون "نوع الخدمة"
+                "service_type": "حجز موعد",  # الكلمة اللي الفرونت هيعرف منها يفتح شاشة الـ Booking
+                "required_service": service_to_fill,  # هنا هيتملى بالتخصص الفرعي أو الأساسي
                 "location": "في الورشة",
                 "gps": False,
             }
