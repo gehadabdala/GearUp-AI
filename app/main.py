@@ -1,6 +1,7 @@
+from importlib.metadata import files
 import json
 import base64
-from typing import Optional
+from typing import List, Optional
 
 from datetime import datetime, timedelta
 
@@ -72,13 +73,16 @@ def safe_db_call(func):
 @safe_db_call
 def get_mechanics_from_db(specialty: str, sub_specialty: str):
     """
-        جلب أفضل 3 فنيين متاحين بناءً على التخصص.
-        المنطق (Logic): يتم إعطاء أولوية (Rank 1) للمتخصص في العطل الدقيق (مثلاً فرامل)،
-        ثم (Rank 2) للمتخصص العام (عفشة).
+    جلب أفضل 3 فنيين متاحين بناءً على التخصص.
+    المنطق (Logic): يتم إعطاء أولوية (Rank 1) للمتخصص في العطل الدقيق (مثلاً فرامل)،
+    ثم (Rank 2) للمتخصص العام (عفشة).
     """
 
     conn = pymssql.connect(
-        server=settings.DB_SERVER, user=settings.DB_USER, password=settings.DB_PASSWORD, database=settings.DB_NAME
+        server=settings.DB_SERVER,
+        user=settings.DB_USER,
+        password=settings.DB_PASSWORD,
+        database=settings.DB_NAME,
     )
     cursor = conn.cursor(as_dict=True)
     query = f"""
@@ -350,12 +354,14 @@ async def get_recommendation(
         messages = [Message(**m) for m in data_dict.get("messages", [])]
         description = messages[-1].content
 
-        image_data_url = None
+        image_data_url = []
         if file:
-            contents = await file.read()
-            encoded = base64.b64encode(contents).decode("utf-8")
-            image_data_url = f"data:{file.content_type};base64,{encoded}"
 
+            contents = await file.read()
+
+            encoded = base64.b64encode(contents).decode("utf-8")
+
+            image_data_url = f"data:{file.content_type};base64,{encoded}"
         # 2. جلب سياق المستخدم
         user_data = get_user_context_data(user_id, car_id)
         user_context = ""
@@ -380,19 +386,42 @@ async def get_recommendation(
         )
 
         # 4. البحث في RAG
-        search_results = db.search(description, n_results=1)
-        metadata_list = search_results["metadatas"][0]
-        top_case = metadata_list[0]
+        user_asking_for_workshop = any(
+            word in description.lower()
+            for word in [
+                "ورشة",
+                "ميكانيكي",
+                "فني",
+                "تصليح",
+                "مركز صيانة",
+                "احجز",
+                "حجز",
+            ]
+        )
+        is_advice_mode = (
+            is_advice and not is_emergency
+        ) and not user_asking_for_workshop
+        if user_asking_for_workshop and not any(
+            word in description for word in ["رجة", "صوت", "مشكلة", "عطل"]
+        ):
+            top_case = {}
+            suggested_solution = "يرجى التوجه للفني للفحص"
+            difficulty = "متوسط"
+            suggested_part = "غير محدد"
+        else:
+            search_results = db.search(description, n_results=1)
+            metadata_list = search_results["metadatas"][0]
+            top_case = metadata_list[0]
 
-        difficulty = str(
-            top_case.get("مستوى الصعوبة", top_case.get("difficulty", "سهل"))
-        ).strip()
-        suggested_solution = top_case.get(
-            "الحل المقترح", top_case.get("solution", "يرجى الفحص")
-        )
-        suggested_part = top_case.get(
-            "القطعة المرشحة", top_case.get("parts", "غير محدد")
-        )
+            difficulty = str(
+                top_case.get("مستوى الصعوبة", top_case.get("difficulty", "سهل"))
+            ).strip()
+            suggested_solution = top_case.get(
+                "الحل المقترح", top_case.get("solution", "يرجى الفحص")
+            )
+            suggested_part = top_case.get(
+                "القطعة المرشحة", top_case.get("parts", "غير محدد")
+            )
 
         # 5. منطق التحية
         if is_greeting and not is_emergency and not needs_mechanic:
@@ -411,7 +440,13 @@ async def get_recommendation(
         spare_parts_recommendations = []
         external_search_links = []
 
-        if not is_greeting:
+        # بنفحص: هل اليوزر داخل يطلب ميكانيكي/حجز مباشرة بدون ما يشرح عطل؟
+        is_direct_booking_request = user_asking_for_workshop and not any(
+            word in description
+            for word in ["رجة", "صوت", "مشكلة", "عطل", "بايظة", "بتعمل"]
+        )
+
+        if not is_greeting and not is_direct_booking_request:
             try:
                 parts_data = await ai.get_personalized_recommendations(
                     car_info, description
@@ -441,17 +476,13 @@ async def get_recommendation(
 
         # 7. جلب بيانات الفنيين
         unique_mechanics_list = []
-        is_advice_mode = is_advice and not is_emergency
-        user_asking_for_workshop = any(
-            word in description.lower()
-            for word in ["ورشة", "ميكانيكي", "فني", "تصليح", "مركز صيانة"]
-        )
+
         is_hard_issue = (
-                                difficulty == "صعب"
-                                or needs_mechanic
-                                or is_emergency
-                                or user_asking_for_workshop
-                        ) and not is_advice_mode
+            difficulty == "صعب"
+            or needs_mechanic
+            or is_emergency
+            or user_asking_for_workshop
+        ) and not is_advice_mode
 
         if is_hard_issue:
             specialty_json = await ai.extract_specialty(description, suggested_part)
@@ -504,7 +535,7 @@ async def get_recommendation(
 
             # بنجيب التخصص الدقيق عشان نملى بيه حقل "نوع الخدمة"
             service_to_fill = "فحص شامل"
-            if 'specialty_json' in locals() and specialty_json:
+            if "specialty_json" in locals() and specialty_json:
                 # 1. بنحاول ناخد التخصص الفرعي الأول (عشان يكون دقيق جداً)
                 service_to_fill = specialty_json.get("sub_specialty")
 
@@ -518,15 +549,31 @@ async def get_recommendation(
                 "location": "في الورشة",
                 "gps": False,
             }
-            instructions = (
-                f"أنت خبير سيارات. {user_context}. العطل يحتاج لتدخل فني ولكنه ليس حالة طوارئ خطيرة. "
-                f"الحل المقترح: {suggested_solution}. {parts_hint} "
-                f"اشرح المشكلة ببساطة، ووجه المستخدم بوضوح للضغط على زر 'إضافة حجز جديد' "
-                f"لاختيار موعد وتاريخ مناسبين لزيارة الورشة. ممنوع إثارة الذعر."
-            )
+
+            if is_direct_booking_request:
+                # 1. الرد الجديد (مباشر ومختصر لطلب الحجز)
+                instructions = (
+                    f"أنت مساعد GearUp الودود. {user_context}. "
+                    f"المستخدم يريد حجز موعد مع ميكانيكي متخصص في {service_to_fill}. "
+                    f"قم بالترحيب به بذكاء، وأكد له أنك رشحت له أفضل الفنيين المتاحين في القائمة أدناه. "
+                    f"وجهه بوضوح للضغط على زر 'إضافة حجز جديد' واختيار الموعد المناسب. "
+                    f"ممنوع تقديم أي تشخيصات تقنية أو احتمالات أعطال لأن المستخدم لم يطلب فحصاً بل طلب حجزاً."
+                )
+            else:
+                vision_instruction = (
+                    "\n- إذا كانت الصور المرفقة غير واضحة لتحديد العطل بدقة، اطلب من المستخدم بلطف تصوير العطل "
+                    "من زاوية أقرب أو في إضاءة أفضل، مع تقديم تشخيص مبدئي بناءً على ما هو متاح."
+                )
+                # 2- (التشخيص المفصل للأعطال الصعبة)
+                instructions = (
+                    f"أنت خبير سيارات. {user_context}. العطل يحتاج لتدخل فني ولكنه ليس حالة طوارئ خطيرة. "
+                    f"الحل المقترح: {suggested_solution}. {parts_hint} "
+                    f"اشرح المشكلة ببساطة، ووجه المستخدم بوضوح للضغط على زر 'إضافة حجز جديد' "
+                    f"لاختيار موعد وتاريخ مناسبين لزيارة الورشة. ممنوع إثارة الذعر."
+                )
 
         else:
-            instructions = f"{user_context} المشكلة بسيطة ويمكن حلها. الحل المقترح: {suggested_solution}. {parts_hint} التنسيق: خطوات الحل."
+            instructions = f"{user_context} المشكلة بسيطة ويمكن حلها. الحل المقترح: {suggested_solution}. {parts_hint} التنسيق: خطوات الحل, {vision_instruction}."
 
         ai_final_answer = await ai.generate_response(
             messages, [instructions], image_data_url
