@@ -46,7 +46,7 @@ class RecommendationResponse(BaseModel):
     has_attachment: bool = False    # إشارة بوجود ملف مرفق (صورة) تم تحليلها في الرد
 
     # --- بيانات الربط مع النظام (System Context & Mapping) ---
-    recommended_mechanics: List[dict] = [] # قائمة الفنيين المقترحين مع بيانات التواصل والموقع
+    recommended_mechanics: Optional[List[str]] = [] # قائمة الفنيين المقترحين مع بيانات التواصل والموقع
     car_id: Optional[str] = None           # معرف السيارة المستخدم في العملية لربط الطلبات
     issue_summary: Optional[str] = None    # ملخص فني للمشكلة للملء التلقائي في نماذج الحجز
 

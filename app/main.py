@@ -74,7 +74,7 @@ def safe_db_call(func):
 @safe_db_call
 def get_mechanics_from_db(specialty: str, sub_specialty: str):
     """
-    جلب أفضل 3 فنيين متاحين بناءً على التخصص.
+    جلب أفضل 15 فني متاحين بناءً على التخصص.
     المنطق (Logic): يتم إعطاء أولوية (Rank 1) للمتخصص في العطل الدقيق (مثلاً فرامل)،
     ثم (Rank 2) للمتخصص العام (عفشة).
     """
@@ -87,10 +87,10 @@ def get_mechanics_from_db(specialty: str, sub_specialty: str):
     )
     cursor = conn.cursor(as_dict=True)
     query = f"""
-                SELECT DISTINCT TOP 3 
+                SELECT DISTINCT TOP 15 
                     u.Id AS MechanicId, u.FirstName + ' ' + u.LastName AS Name, u.Phone, 
                     mp.Location_Latitude AS Latitude, mp.Location_Longitude AS Longitude,
-                    ss.Name AS SubSpecialty, -- أضفنا التخصص الفرعي هنا
+                    ss.Name AS SubSpecialty, 
                     CASE 
                         WHEN ss.Name LIKE N'%{sub_specialty}%' THEN 1 
                         WHEN s.Name LIKE N'%{specialty}%' THEN 2    
@@ -538,7 +538,7 @@ async def get_recommendation(
                 print(f"⚠️ Error fetching personalized parts: {e}")
 
         # 7. جلب بيانات الفنيين
-        unique_mechanics_list = []
+        mechanic_ids_list = []
 
         is_hard_issue = (
             difficulty == "صعب"
@@ -558,7 +558,7 @@ async def get_recommendation(
                 for m in mechanics_list:
                     m_id = m.get("MechanicId")
                     if m_id not in seen_ids:
-                        unique_mechanics_list.append(m)
+                        mechanic_ids_list.append(str(m_id))
                         seen_ids.add(m_id)
 
         # 8. بناء الرد النهائي وتوجيه الـ AI
@@ -636,7 +636,7 @@ async def get_recommendation(
                 )
 
         else:
-            instructions = f"{user_context} المشكلة بسيطة ويمكن حلها. الحل المقترح: {suggested_solution}. {parts_hint} التنسيق: خطوات الحل, {vision_instruction}."
+            instructions = f"{user_context} المشكلة بسيطة ويمكن حلها. الحل المقترح: {suggested_solution}. {parts_hint} التنسيق: خطوات الحل."
 
         ai_final_answer = await ai.generate_response(
             messages, [instructions], image_data_url
@@ -663,14 +663,12 @@ async def get_recommendation(
             query=description,
             ai_answer=ai_final_answer,
             source_documents=[top_case] if not is_hard_issue else [],
-            requires_feedback=is_advice_mode
-            or offers_reminder_flag
-            or (not is_hard_issue),
+            requires_feedback=is_advice_mode or offers_reminder_flag or (not is_hard_issue),
             requires_mechanic=is_hard_issue,
             is_emergency=is_emergency,
             is_advice_mode=is_advice_mode,
             offers_reminder=offers_reminder_flag,
-            recommended_mechanics=unique_mechanics_list,
+            recommended_mechanics=mechanic_ids_list,
             car_id=car_id,
             issue_summary=description,
             service_type=auto_fill_data["service_type"],
