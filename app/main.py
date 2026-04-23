@@ -88,7 +88,8 @@ def get_mechanics_from_db(specialty: str, sub_specialty: str):
     cursor = conn.cursor(as_dict=True)
     query = f"""
                 SELECT DISTINCT TOP 15 
-                    u.Id AS MechanicId, u.FirstName + ' ' + u.LastName AS Name, u.Phone, 
+                    u.Id AS UserId,
+                    u.FirstName + ' ' + u.LastName AS Name, u.Phone, 
                     mp.Location_Latitude AS Latitude, mp.Location_Longitude AS Longitude,
                     ss.Name AS SubSpecialty, 
                     CASE 
@@ -537,29 +538,29 @@ async def get_recommendation(
             except Exception as e:
                 print(f"⚠️ Error fetching personalized parts: {e}")
 
-        # 7. جلب بيانات الفنيين
-        mechanic_ids_list = []
+                # 7. جلب بيانات الفنيين
+                mechanic_ids_list = []
 
-        is_hard_issue = (
-            difficulty == "صعب"
-            or needs_mechanic
-            or is_emergency
-            or user_asking_for_workshop
-        ) and not is_advice_mode
+                is_hard_issue = (
+                                    difficulty == "صعب"
+                                    or needs_mechanic
+                                    or is_emergency
+                                    or user_asking_for_workshop
+                            ) and not is_advice_mode
 
-        if is_hard_issue:
-            specialty_json = await ai.extract_specialty(description, suggested_part)
-            mechanics_list = get_mechanics_from_db(
-                specialty_json.get("specialty", "ميكانيكا"),
-                specialty_json.get("sub_specialty", ""),
-            )
-            if mechanics_list:
-                seen_ids = set()
-                for m in mechanics_list:
-                    m_id = m.get("MechanicId")
-                    if m_id not in seen_ids:
-                        mechanic_ids_list.append(str(m_id))
-                        seen_ids.add(m_id)
+                if is_hard_issue:
+                    specialty_json = await ai.extract_specialty(description, suggested_part)
+                    mechanics_list = get_mechanics_from_db(
+                        specialty_json.get("specialty", "ميكانيكا"),
+                        specialty_json.get("sub_specialty", ""),
+                    )
+                    if mechanics_list:
+                        seen_ids = set()
+                        for m in mechanics_list:
+                            m_id = m.get("UserId")
+                            if m_id not in seen_ids:
+                                mechanic_ids_list.append(str(m_id))
+                                seen_ids.add(m_id)
 
         # 8. بناء الرد النهائي وتوجيه الـ AI
         offers_reminder_flag = False

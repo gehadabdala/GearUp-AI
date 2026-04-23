@@ -17,38 +17,32 @@ class VectorDB:
 
     def ingest_data(self):
         """
-        دالة ذكية وموحدة: تكتشف مصدر البيانات (Google Sheets أو Excel)
-        تلقائياً من ملف الـ .env وتقوم برفعها على دفعات.
+        دالة موحدة لرفع البيانات من Google Sheets فقط
+        مع منع التكرار + batching
         """
-        # 1. منع التكرار: لو الداتا مرفوعة قبل كده، مش هيرفعها تاني
+
+        # 1. منع التكرار
         if self.collection.count() > 0:
             print("✅ البيانات موجودة بالفعل في ChromaDB. تم تخطي مرحلة الرفع.")
             return
 
         try:
-            # 2. تحديد مصدر البيانات تلقائياً
-            if settings.SHEET_ID:
-                print(f"🌐 تم اكتشاف SHEET_ID. جاري السحب من Google Sheets...")
-                df = pd.read_csv(settings.SHEET_URL)
-            elif settings.FILE_PATH:
-                print(f"📥 لم يتم العثور على SHEET_ID. جاري السحب من الملف المحلي: {settings.FILE_PATH}")
-                if settings.FILE_PATH.endswith('.csv'):
-                    df = pd.read_csv(settings.FILE_PATH)
-                else:
-                    df = pd.read_excel(settings.FILE_PATH)
-            else:
-                print("❌ خطأ: لم يتم العثور على SHEET_ID أو FILE_PATH في ملف .env!")
-                return
+            # 2. التأكد من وجود مصدر البيانات
+            if not settings.SHEET_ID:
+                raise ValueError("❌ SHEET_ID غير موجود في environment variables")
 
-            # 3. تنظيف البيانات الأساسي
-            df = df.dropna(how='all')  # حذف الصفوف الفارغة تماماً
-            df = df.fillna("")  # استبدال القيم المفقودة (NaN) بنص فارغ
+            print("🌐 جاري سحب البيانات من Google Sheets...")
+
+            df = pd.read_csv(settings.SHEET_URL)
+
+            # 3. تنظيف البيانات
+            df = df.dropna(how='all')
+            df = df.fillna("")
 
             documents, metadatas, ids = [], [], []
 
-            # 4. معالجة الصفوف وتوحيد الأعمدة
+            # 4. تجهيز البيانات
             for index, row in df.iterrows():
-                # محاولة قراءة العمود بأي مسمى
                 problem = row.get('المشكلة') or row.get('العطل') or "غير محدد"
                 description = row.get('وصف العطل') or row.get('الوصف') or ""
                 solution = row.get('الحل المقترح') or row.get('الحل') or "يرجى الفحص الفني"
@@ -56,21 +50,21 @@ class VectorDB:
                 difficulty = row.get('مستوى الصعوبة') or "متوسط"
                 category = row.get('الفئة') or "عام"
 
-                # بناء النص اللي الذكاء الاصطناعي هيبحث جواه
                 content = f"المشكلة: {problem}\nالوصف: {description}\nالحل: {solution}"
                 documents.append(content)
 
-                # تخزين البيانات الوصفية (Metadata)
                 metadatas.append({
                     "القطعة المرشحة": str(part),
                     "الحل المقترح": str(solution),
                     "مستوى الصعوبة": str(difficulty).strip(),
                     "الفئة": str(category)
                 })
+
                 ids.append(f"id_{index}")
 
-            # 5. رفع البيانات بنظام الدفعات (Batching) عشان السيرفر ميهنجش
+            # 5. batching
             batch_size = 5000
+
             for i in range(0, len(documents), batch_size):
                 self.collection.add(
                     documents=documents[i: i + batch_size],
@@ -79,10 +73,11 @@ class VectorDB:
                 )
                 print(f"⏳ تم رفع الدفعة رقم {i // batch_size + 1} بنجاح...")
 
-            print(f"✅ تم الانتهاء! إجمالي السجلات المرفوعة: {len(documents)}")
+            print(f"✅ تم الانتهاء! إجمالي السجلات: {len(documents)}")
 
         except Exception as e:
-            print(f"❌ حدث خطأ غير متوقع أثناء المعالجة: {str(e)}")
+            print(f"❌ خطأ أثناء ingest: {str(e)}")
+
 
     # def ingest_excel(self):
     #     """رفع البيانات على دفعات لتجنب خطأ الـ Batch Size"""
