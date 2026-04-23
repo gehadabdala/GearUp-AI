@@ -1,11 +1,12 @@
 from importlib.metadata import files
 import json
 import base64
+import httpx
 from typing import List, Optional
 
 from datetime import datetime, timedelta
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Query
+from fastapi import APIRouter, FastAPI, HTTPException, UploadFile, File, Form, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 import pymssql
@@ -112,7 +113,9 @@ def get_mechanics_from_db(specialty: str, sub_specialty: str):
 @safe_db_call
 def search_mechanics_in_db(
     query_keyword: Optional[str],
+    category: Optional[str],
     min_rating: int,
+    is_available: Optional[bool],
     sort_by: str,
     user_lat: Optional[float],
     user_lng: Optional[float],
@@ -149,8 +152,17 @@ def search_mechanics_in_db(
         WHERE mp.IsAvailable = 1 
         -- AND mp.Rating >= {min_rating} <-- TODO: Uncomment when Rating is added
     """
+    # 2. فلترة التوافر (Availability) - FR-2
+    if is_available is True:
+        sql += " AND mp.IsAvailable = 1 "
+    elif is_available is False:
+        sql += " AND mp.IsAvailable = 0 "
 
-    # 2. فلترة بكلمة البحث (لو اليوزر كتب حاجة)
+    # 3. فلترة الفئة (Category) - FR-1
+    if category:
+        sql += f" AND s.Name LIKE N'%{category}%' "
+
+    # 4. فلترة بكلمة البحث (لو اليوزر كتب حاجة)
     if query_keyword:
         sql += f"""
             AND (
@@ -161,13 +173,12 @@ def search_mechanics_in_db(
             )
         """
 
-        # 3. الترتيب (Ranking)
-        if sort_by == "distance" and user_lat and user_lng:
-            # حساب المسافة التقريبية للترتيب (الأقرب يظهر الأول)
-            sql += f" ORDER BY (POWER(mp.Location_Latitude - {user_lat}, 2) + POWER(mp.Location_Longitude - {user_lng}, 2)) ASC"
-        else:
-            # الترتيب الافتراضي مؤقتاً: الترتيب بالاسم المدمج عشان الـ DISTINCT متزعلش
-            sql += " ORDER BY Name ASC"
+    # 5. الترتيب (Ranking)
+    if sort_by == "distance" and user_lat and user_lng:
+        # حساب المسافة التقريبية للترتيب (الأقرب يظهر الأول)
+        sql += f" ORDER BY (POWER(mp.Location_Latitude - {user_lat}, 2) + POWER(mp.Location_Longitude - {user_lng}, 2)) ASC"
+    else:
+        sql += " ORDER BY Name ASC"  # ترتيب افتراضي حسب الاسم
 
     cursor.execute(sql)
     results = cursor.fetchall()
@@ -319,6 +330,58 @@ def get_search_suggestions_from_db(query_keyword: str):
 #     conn.commit()
 #     conn.close()
 #     return True
+
+
+@safe_db_call
+def get_mechanic_document_path(mechanic_id: str):
+    """
+    بتروح لجدول MechanicDocuments وتسحب قيمة الـ FilePath
+     بناءً على الـ MechanicProfileId
+    """
+    conn = pymssql.connect(
+        server=settings.DB_SERVER,
+        user=settings.DB_USER,
+        password=settings.DB_PASSWORD,
+        database=settings.DB_NAME,
+    )
+    cursor = conn.cursor(as_dict=True)
+    # بنجيب المسار الخاص بأحدث مستند أو المستند الخاص بالورشة
+    query = f"""
+        SELECT TOP 1 FilePath 
+        FROM dbo.MechanicDocuments 
+        WHERE MechanicProfileId = '{mechanic_id}'
+        ORDER BY CreatedAt DESC
+    """
+    cursor.execute(query)
+    result = cursor.fetchone()
+    conn.close()
+    return result["FilePath"] if result else None
+
+
+@safe_db_call
+def update_document_status(mechanic_id: str, is_approved: bool):
+    """
+    تحديث حالة المستند (مقبول أو مرفوض) في الداتابيز.
+    """
+    conn = pymssql.connect(
+        server=settings.DB_SERVER,
+        user=settings.DB_USER,
+        password=settings.DB_PASSWORD,
+        database=settings.DB_NAME,
+    )
+    cursor = conn.cursor()
+    status_text = "Approved" if is_approved else "Rejected"
+
+    # تحديث عمود Status
+    query = f"""
+        UPDATE dbo.MechanicDocuments 
+        SET Status = N'{status_text}', 
+            UpdatedAt = CURRENT_TIMESTAMP
+        WHERE MechanicProfileId = '{mechanic_id}'
+    """
+    cursor.execute(query)
+    conn.commit()
+    conn.close()
 
 
 # =====================================================================
@@ -633,24 +696,71 @@ async def get_recommendation(
 # =====================================================================
 # [ 5. مسار التحقق من المستندات (OCR & Document Verification) ]
 # =====================================================================
+from fastapi import APIRouter, Form, File, UploadFile, HTTPException
+import base64
+import json
+
+
 @app.post("/approve-mechanic")
 async def approve_mechanic(
     mechanic_id: str = Form(...),
-    doc_type: str = Form(...),
-    file: UploadFile = File(...),
+    # doc_type: str = Form(..., description="نوع المستند: بطاقة، رخصة ورشة، إلخ"),
+    # file: UploadFile = File(...),
 ):
     """
-    دالة للتحقق من أوراق ومستندات الفنيين (مثل: البطاقة الشخصية، رخصة الورشة).
-    تستقبل صورة المستند، وتحولها لصيغة Base64، ثم ترسلها لخدمة الـ AI (Gemini Vision).
+    التحقق الآلي من مستندات الفنيين باستخدام الذكاء الاصطناعي (Gemini Vision).
     """
-    contents = await file.read()
-    encoded = base64.b64encode(contents).decode("utf-8")
-    image_data_url = f"data:{file.content_type};base64,{encoded}"
+    try:
 
-    result = await approval_service.verify_document(
-        doc_type=doc_type, image_data=image_data_url
-    )
-    return result
+        # 1. بننادي دالة الداتابيز عشان تجيب الـ FilePath
+        db_file_path = get_mechanic_document_path(mechanic_id)
+
+        if not db_file_path:
+            raise HTTPException(
+                status_code=404,
+                detail="لم يتم العثور على مسار المستند في قاعدة البيانات.",
+            )
+
+        # 2. بنستخدم اللينك اللي رجع من الداتابيز (Cloudinary URL) عشان ننزل الصورة
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(db_file_path)
+            if resp.status_code != 200:
+                raise HTTPException(
+                    status_code=400,
+                    detail="فشل تحميل الصورة من مسار Cloudinary المخزن.",
+                )
+
+            contents = resp.content
+            encoded = base64.b64encode(contents).decode("utf-8")
+            image_data_url = f"data:image/jpeg;base64,{encoded}"
+
+        # 3. إرسال الصورة للـ AI للتحليل
+        # لازم الـ Service تكون بترجع JSON فيه حالة القبول والسبب
+        ai_result = await ai.verify_document(image_data=image_data_url)
+
+        # استخراج النتيجة من رد الذكاء الاصطناعي
+        is_approved = ai_result.get("is_approved", False)
+        ai_feedback = ai_result.get("feedback", "لم يتم تقديم تفاصيل.")
+
+        # 4. بنحدث جدول MechanicDocuments بالحالة الجديدة
+        update_document_status(mechanic_id=mechanic_id, is_approved=is_approved)
+
+        # 5. إرجاع النتيجة للـ Frontend
+        return {
+            "status": "success",
+            "mechanic_id": mechanic_id,
+            "is_approved": is_approved,
+            "ai_feedback": ai_feedback,
+            "message": (
+                "تم التحقق من المستند بنجاح." if is_approved else "تم رفض المستند."
+            ),
+        }
+
+    except Exception as e:
+        print(f"❌ Document Verification Error: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"حدث خطأ أثناء فحص المستند: {str(e)}"
+        )
 
 
 # =====================================================================
@@ -709,7 +819,13 @@ async def search_mechanics_endpoint(
     q: Optional[str] = Query(
         None, description="كلمة البحث (اسم الفني، التخصص، أو وصف المشكلة)"
     ),
+    category: Optional[str] = Query(
+        None, description="الفئة المحددة (مثال: ميكانيكا، كهرباء) - FR-1"
+    ),
     min_rating: int = Query(3, description="الحد الأدنى للتقييم (الافتراضي 3 نجوم)"),
+    is_available: Optional[bool] = Query(
+        None, description="هل الفني متاح الآن؟ - FR-2"
+    ),
     sort_by: str = Query("rating", description="ترتيب حسب: rating أو distance"),
     user_lat: Optional[float] = Query(
         None, description="خط عرض المستخدم لحساب المسافة"
@@ -753,7 +869,13 @@ async def search_mechanics_endpoint(
 
     # 3. جلب النتائج من قاعدة البيانات
     results = search_mechanics_in_db(
-        search_keyword, min_rating, sort_by, user_lat, user_lng
+        search_keyword=search_keyword,
+        category=category,
+        min_rating=min_rating,
+        is_available=is_available,
+        sort_by=sort_by,
+        user_lat=user_lat,
+        user_lng=user_lng,
     )
 
     if results is None:

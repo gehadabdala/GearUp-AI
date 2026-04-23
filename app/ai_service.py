@@ -1,5 +1,6 @@
 import json
 import base64
+from openai import AsyncOpenAI
 from openai import OpenAI
 from app.models import Message
 from app.config import settings
@@ -17,7 +18,7 @@ class AIService:
     DEFAULT_MODEL = "google/gemini-2.0-flash-001"
 
     def __init__(self):
-        self.client = OpenAI(
+        self.client = AsyncOpenAI(
             base_url="https://openrouter.ai/api/v1",
             api_key=settings.OPENROUTER_API_KEY,
         )
@@ -76,31 +77,31 @@ class AIService:
             print(f"❌ [AI Generate Error]: {e}")
             return "عذراً، واجهت مشكلة تقنية في الخادم. يرجى المحاولة مرة أخرى لاحقاً."
 
-    # =====================================================================
-    # [ 3. محرك قراءة المستندات (Vision & OCR) ]
-    # =====================================================================
-    async def get_ocr_text(self, prompt: str, image_data_url: str) -> str:
-        """
-        قراءة النصوص من الصور (مثل الرخص والبطاقات) باستخدام الذكاء الاصطناعي.
-        """
-        try:
-            response = self.client.chat.completions.create(
-                model=self.DEFAULT_MODEL,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": prompt},
-                            {"type": "image_url", "image_url": {"url": image_data_url}},
-                        ],
-                    }
-                ],
-                temperature=0.1,  # نستخدم Temperature 0.1 لضمان الدقة العالية وعدم التأليف (Hallucination) في قراءة الأرقام
-            )
-            return response.choices[0].message.content
-        except Exception as e:
-            print(f"[OCR Error]: {e}")
-            return f"خطأ في قراءة الصورة: {str(e)}"
+        # # =====================================================================
+        # # [ 3. محرك قراءة المستندات (Vision & OCR) ]
+        # # =====================================================================
+
+        # """
+        # قراءة النصوص من الصور (مثل الرخص والبطاقات) باستخدام الذكاء الاصطناعي.
+        # """
+        # try:
+        #     response = self.client.chat.completions.create(
+        #         model=self.DEFAULT_MODEL,
+        #         messages=[
+        #             {
+        #                 "role": "user",
+        #                 "content": [
+        #                     {"type": "text", "text": prompt},
+        #                     {"type": "image_url", "image_url": {"url": image_data_url}},
+        #                 ],
+        #             }
+        #         ],
+        #         temperature=0.1,  # نستخدم Temperature 0.1 لضمان الدقة العالية وعدم التأليف (Hallucination) في قراءة الأرقام
+        #     )
+        #     return response.choices[0].message.content
+        # except Exception as e:
+        #     print(f"[OCR Error]: {e}")
+        #     return f"خطأ في قراءة الصورة: {str(e)}"
 
     # =====================================================================
     # [ 4. محرك استخراج البيانات المهيكلة (Structured Data Extraction) ]
@@ -332,3 +333,63 @@ class AIService:
         except Exception as e:
             print(f"❌ [Get Recommendations Error]: {e}")
             return {"suggested_parts": [], "search_links": []}
+
+    async def verify_document(
+        self, image_data: str, doc_type: str = "رخصة ورشة سيارات"
+    ) -> dict:
+        """
+        فحص المستندات باستخدام Gemini 2.0 Flash عبر OpenRouter مع إرجاع JSON نظيف.
+        """
+        try:
+            # 1. التحقق من التنسيق وفصل الـ Base64 بأمان
+            if not image_data.startswith("data:image/"):
+                return {
+                    "is_approved": False,
+                    "feedback": "تنسيق الصورة غير صالح. يجب أن يبدأ بـ 'data:image/...'",
+                }
+
+            # 2. الـ Prompt (تم فصل الأقواس لمنع تعارض f-string)
+            prompt = (
+                f"أنت خبير أمني مسؤول عن تدقيق المستندات (KYC). "
+                f"قم بفحص هذه الصورة التي تمثل: {doc_type}. "
+                "تأكد من أن الصورة واضحة، وأن المستند يبدو حقيقياً (غير معدل)، "
+                "وأنه يطابق النوع المطلوب. "
+                "قم بالرد باستخدام هيكل JSON التالي فقط: "
+                '{"is_approved": boolean, "feedback": "string"}'
+            )
+
+            # 3. إرسال الطلب لـ الموديل
+            response = await self.client.chat.completions.create(
+                model=self.DEFAULT_MODEL,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {"type": "image_url", "image_url": {"url": image_data}},
+                        ],
+                    }
+                ],
+                response_format={"type": "json_object"},
+            )
+
+            # 4. قراءة الرد وتحويله
+            result_text = response.choices[0].message.content
+            result = json.loads(result_text)
+            print(f"🤖 Raw AI Response: {result_text}")
+
+            # 5. التأكد من وجود المفاتيح المطلوبة عشان السيرفر ميضربش
+            return {
+                "is_approved": bool(result.get("is_approved", False)),
+                "feedback": str(
+                    result.get("feedback", "لم يقدم الذكاء الاصطناعي سبباً واضحاً.")
+                ),
+            }
+
+        except Exception as e:
+            print(f"❌ AI Verification Error: {e}")
+            # إرجاع رد آمن جداً في حالة حدوث أي خطأ بدل ما الـ API يقع
+            return {
+                "is_approved": False,
+                "feedback": f"تعذر فحص المستند آلياً في الوقت الحالي. (التفاصيل: {str(e)})",
+            }
