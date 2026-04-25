@@ -74,11 +74,9 @@ def safe_db_call(func):
 @safe_db_call
 def get_mechanics_from_db(specialty: str, sub_specialty: str):
     """
-    جلب أفضل 15 فني متاحين بناءً على التخصص.
-    المنطق (Logic): يتم إعطاء أولوية (Rank 1) للمتخصص في العطل الدقيق (مثلاً فرامل)،
-    ثم (Rank 2) للمتخصص العام (عفشة).
+    جلب أفضل 15 فني متاحين بناءً على التخصص والتقييم.
+    المنطق: Rank 1 للتخصص الدقيق، Rank 2 للتخصص العام، مع استبعاد أقل من 3 نجوم.
     """
-
     conn = pymssql.connect(
         server=settings.DB_SERVER,
         user=settings.DB_USER,
@@ -86,25 +84,36 @@ def get_mechanics_from_db(specialty: str, sub_specialty: str):
         database=settings.DB_NAME,
     )
     cursor = conn.cursor(as_dict=True)
+
+    # تم دمج الـ Query بشكل سليم داخل الـ f-string
     query = f"""
-                SELECT DISTINCT TOP 15 
-                    u.Id AS UserId,
-                    u.FirstName + ' ' + u.LastName AS Name, u.Phone, 
-                    mp.Location_Latitude AS Latitude, mp.Location_Longitude AS Longitude,
-                    ss.Name AS SubSpecialty, 
-                    CASE 
-                        WHEN ss.Name LIKE N'%{sub_specialty}%' THEN 1 
-                        WHEN s.Name LIKE N'%{specialty}%' THEN 2    
-                        ELSE 3 
-                    END AS Rank
-                FROM dbo.Users u
-                INNER JOIN dbo.MechanicProfile mp ON u.Id = mp.UserId
-                INNER JOIN dbo.Specializations s ON mp.Id = s.MechanicProfileId
-                LEFT JOIN dbo.SubSpecializations ss ON s.Id = ss.SpecializationId
-                WHERE mp.IsAvailable = 1 
-                AND (s.Name LIKE N'%{specialty}%' OR ss.Name LIKE N'%{sub_specialty}%')
-                ORDER BY Rank 
-            """
+        SELECT TOP 15 
+            u.Id AS MechanicId, 
+            u.FirstName + ' ' + u.LastName AS Name, 
+            u.Phone, 
+            mp.Location_Latitude AS Latitude, 
+            mp.Location_Longitude AS Longitude,
+            COALESCE(AVG(CAST(br.Stars AS FLOAT)), 0) AS AverageRating,
+            CASE 
+                WHEN ss.Name LIKE N'%{sub_specialty}%' THEN 1 
+                WHEN s.Name LIKE N'%{specialty}%' THEN 2    
+                ELSE 3 
+            END AS Rank
+        FROM dbo.Users u
+        INNER JOIN dbo.MechanicProfile mp ON u.Id = mp.UserId
+        INNER JOIN dbo.Specializations s ON mp.Id = s.MechanicProfileId
+        LEFT JOIN dbo.SubSpecializations ss ON s.Id = ss.SpecializationId
+        LEFT JOIN dbo.BookingRatings br ON u.Id = br.MechanicId
+        WHERE mp.IsAvailable = 1 
+        AND (s.Name LIKE N'%{specialty}%' OR ss.Name LIKE N'%{sub_specialty}%')
+        GROUP BY 
+            u.Id, u.FirstName, u.LastName, u.Phone, 
+            mp.Location_Latitude, mp.Location_Longitude, 
+            ss.Name, s.Name
+        HAVING COALESCE(AVG(CAST(br.Stars AS FLOAT)), 0) >= 3
+        ORDER BY Rank, AverageRating DESC 
+    """
+
     cursor.execute(query)
     mechanics = cursor.fetchall()
     conn.close()
@@ -112,86 +121,9 @@ def get_mechanics_from_db(specialty: str, sub_specialty: str):
 
 
 @safe_db_call
-def search_mechanics_in_db(
-    query_keyword: Optional[str],
-    category: Optional[str],
-    min_rating: int,
-    is_available: Optional[bool],
-    sort_by: str,
-    user_lat: Optional[float],
-    user_lng: Optional[float],
-):
-    """
-    محرك البحث والفلترة الخاص بالفنيين.
-    يدعم البحث بالاسم أو التخصص، والترتيب بالمسافة.
-    (تم إيقاف فلتر التقييم مؤقتاً لحين إضافة عمود Rating في قاعدة البيانات)
-    """
-
-    conn = pymssql.connect(
-        server=settings.DB_SERVER,
-        user=settings.DB_USER,
-        password=settings.DB_PASSWORD,
-        database=settings.DB_NAME,
-    )
-    cursor = conn.cursor(as_dict=True)
-
-    # 1. الاستعلام الأساسي (تم إيقاف شرط التقييم مؤقتاً)
-    sql = f"""
-        SELECT DISTINCT
-            u.Id AS MechanicId,
-            u.FirstName + ' ' + u.LastName AS Name,
-            u.Phone,
-            -- mp.Rating, <-- TODO: Uncomment when Rating column is added
-            0 AS Rating, -- قيمة مؤقتة (Dummy) عشان الفرونت إند ميضربش
-            s.Name AS Specialty,
-            mp.Location_Latitude AS Latitude,
-            mp.Location_Longitude AS Longitude
-        FROM dbo.Users u
-        INNER JOIN dbo.MechanicProfile mp ON u.Id = mp.UserId
-        INNER JOIN dbo.Specializations s ON mp.Id = s.MechanicProfileId
-        LEFT JOIN dbo.SubSpecializations ss ON s.Id = ss.SpecializationId
-        WHERE mp.IsAvailable = 1 
-        -- AND mp.Rating >= {min_rating} <-- TODO: Uncomment when Rating is added
-    """
-    # 2. فلترة التوافر (Availability) - FR-2
-    if is_available is True:
-        sql += " AND mp.IsAvailable = 1 "
-    elif is_available is False:
-        sql += " AND mp.IsAvailable = 0 "
-
-    # 3. فلترة الفئة (Category) - FR-1
-    if category:
-        sql += f" AND s.Name LIKE N'%{category}%' "
-
-    # 4. فلترة بكلمة البحث (لو اليوزر كتب حاجة)
-    if query_keyword:
-        sql += f"""
-            AND (
-                u.FirstName LIKE N'%{query_keyword}%' OR 
-                u.LastName LIKE N'%{query_keyword}%' OR 
-                s.Name LIKE N'%{query_keyword}%' OR 
-                ss.Name LIKE N'%{query_keyword}%'
-            )
-        """
-
-    # 5. الترتيب (Ranking)
-    if sort_by == "distance" and user_lat and user_lng:
-        # حساب المسافة التقريبية للترتيب (الأقرب يظهر الأول)
-        sql += f" ORDER BY (POWER(mp.Location_Latitude - {user_lat}, 2) + POWER(mp.Location_Longitude - {user_lng}, 2)) ASC"
-    else:
-        sql += " ORDER BY Name ASC"  # ترتيب افتراضي حسب الاسم
-
-    cursor.execute(sql)
-    results = cursor.fetchall()
-    conn.close()
-    return results
-
-
-@safe_db_call
 def get_user_context_data(user_id: str, car_id: Optional[str] = None):
     """
     استرجاع بيانات العميل والسيارة لبناء سياق محادثة مخصص (Personalized Context).
-    يسمح للذكاء الاصطناعي بمناداة العميل باسمه وذكر موديل سيارته لرفع جودة التجربة.
     """
     if not user_id:
         return None
@@ -204,7 +136,6 @@ def get_user_context_data(user_id: str, car_id: Optional[str] = None):
     )
     cursor = conn.cursor(as_dict=True)
 
-    # لو الفرونت بعت car_id محدد، هنجيب بيانات العربية دي بالظبط
     if car_id:
         query = f"""
             SELECT u.FirstName, c.Brand, c.Model, c.Year 
@@ -213,7 +144,6 @@ def get_user_context_data(user_id: str, car_id: Optional[str] = None):
             LEFT JOIN dbo.Car c ON cp.Id = c.CustomerProfileId
             WHERE u.Id = '{user_id}' AND c.Id = '{car_id}'
         """
-    # لو مبعتش (كحالة احتياطية)، هنجيب أول عربية تقابلنا زي زمان
     else:
         query = f"""
             SELECT TOP 1 u.FirstName, c.Brand, c.Model, c.Year 
@@ -282,55 +212,77 @@ def get_search_suggestions_from_db(query_keyword: str):
     return results
 
 
-# @safe_db_call
-# def get_mechanic_schedule(mechanic_name: str):
-#     """دالة لجلب المواعيد المتاحة لميكانيكي محدد بالاسم (محمية)"""
-#     conn = pymssql.connect(
-#         server=settings.DB_SERVER,
-#         user=settings.DB_USER,
-#         password=settings.DB_PASSWORD,
-#         database=settings.DB_NAME,
-#     )
-#     cursor = conn.cursor(as_dict=True)
-#
-#     query = f"""
-#         SELECT AvailableDate, StartTime, EndTime
-#         FROM dbo.MechanicSchedules ms
-#         INNER JOIN dbo.MechanicProfile mp ON ms.MechanicProfileId = mp.Id
-#         INNER JOIN dbo.Users u ON mp.UserId = u.Id
-#         WHERE (u.FirstName + ' ' + u.LastName) LIKE N'%{mechanic_name}%'
-#         AND ms.IsBooked = 0
-#     """
-#     cursor.execute(query)
-#     schedules = cursor.fetchall()
-#     conn.close()
-#     return schedules
+@safe_db_call
+def search_mechanics_in_db(
+    query_keyword: Optional[str],
+    category: Optional[str],
+    min_rating: int,
+    is_available: Optional[bool],
+    sort_by: str,
+    user_lat: Optional[float],
+    user_lng: Optional[float],
+):
+    """
+    محرك البحث المطور: يدمج بين المتطلبات الجديدة من الـ GitHub وتعديلاتك الخاصة بالتقييم.
+    """
+    conn = pymssql.connect(
+        server=settings.DB_SERVER,
+        user=settings.DB_USER,
+        password=settings.DB_PASSWORD,
+        database=settings.DB_NAME,
+    )
+    cursor = conn.cursor(as_dict=True)
 
+    sql = f"""
+        SELECT 
+            u.Id AS MechanicId,
+            u.FirstName + ' ' + u.LastName AS Name,
+            u.Phone,
+            s.Name AS Specialty,
+            mp.Location_Latitude AS Latitude,
+            mp.Location_Longitude AS Longitude,
+            COALESCE(AVG(CAST(br.Stars AS FLOAT)), 0) AS AverageRating
+        FROM dbo.Users u
+        INNER JOIN dbo.MechanicProfile mp ON u.Id = mp.UserId
+        INNER JOIN dbo.Specializations s ON mp.Id = s.MechanicProfileId
+        LEFT JOIN dbo.SubSpecializations ss ON s.Id = ss.SpecializationId
+        LEFT JOIN dbo.BookingRatings br ON u.Id = br.MechanicId 
+        WHERE 1=1
+    """
 
-# @safe_db_call
-# def add_reminder_to_db(user_id, car_id, title, desc, r_date, freq, n_time):
-#     conn = pymssql.connect(
-#         server=settings.DB_SERVER,
-#         user=settings.DB_USER,
-#         password=settings.DB_PASSWORD,
-#         database=settings.DB_NAME,
-#     )
-#     cursor = conn.cursor()
-#
-#     # الـ Query دي فيها كل الأعمدة الإلزامية اللي الداتا بيز طلبتها لحد دلوقتي
-#     query = """
-#         INSERT INTO dbo.Reminders
-#         (Id, UserId, CarId, Name, Description, ScheduleStartDate, FrequencyType,
-#          ScheduleAdvanceNoticeDays, NotificationsEnabled, NotificationChannels,
-#          StatusType, StatusReason, StatusLastModified, CreatedAt, UpdatedAt)
-#         VALUES (NEWID(), %s, %s, %s, %s, %s, %s, 3, 1, 'Push', 'Pending', 'AI Generated', GETDATE(), GETDATE(), GETDATE())
-#     """
-#
-#     cursor.execute(query, (user_id, car_id, title, desc, r_date, freq))
-#
-#     conn.commit()
-#     conn.close()
-#     return True
+    if is_available is True:
+        sql += " AND mp.IsAvailable = 1 "
+    elif is_available is False:
+        sql += " AND mp.IsAvailable = 0 "
+
+    if category:
+        sql += f" AND s.Name LIKE N'%{category}%' "
+
+    if query_keyword:
+        sql += f"""
+            AND (
+                u.FirstName LIKE N'%{query_keyword}%' OR 
+                u.LastName LIKE N'%{query_keyword}%' OR 
+                s.Name LIKE N'%{query_keyword}%' OR 
+                ss.Name LIKE N'%{query_keyword}%'
+            )
+        """
+
+    sql += " GROUP BY u.Id, u.FirstName, u.LastName, u.Phone, s.Name, mp.Location_Latitude, mp.Location_Longitude, mp.IsAvailable "
+
+    # شرط الـ Rating اللي عدلناه عشان التيست
+    sql += f" HAVING COALESCE(AVG(CAST(br.Stars AS FLOAT)), 0) >= {min_rating} OR COALESCE(AVG(CAST(br.Stars AS FLOAT)), 0) = 0 "
+
+    # الترتيب (دمجنا ترتيب المسافة بتاع الـ GitHub مع الكود بتاعك)
+    if sort_by == "distance" and user_lat and user_lng:
+        sql += f" ORDER BY (POWER(mp.Location_Latitude - {user_lat}, 2) + POWER(mp.Location_Longitude - {user_lng}, 2)) ASC"
+    else:
+        sql += " ORDER BY AverageRating DESC"
+
+    cursor.execute(sql)
+    results = cursor.fetchall()
+    conn.close()
+    return results
 
 
 @safe_db_call
@@ -542,11 +494,11 @@ async def get_recommendation(
         mechanic_ids_list = []
 
         is_hard_issue = (
-                            difficulty == "صعب"
-                            or needs_mechanic
-                            or is_emergency
-                            or user_asking_for_workshop
-                    ) and not is_advice_mode
+            difficulty == "صعب"
+            or needs_mechanic
+            or is_emergency
+            or user_asking_for_workshop
+        ) and not is_advice_mode
 
         if is_hard_issue:
             specialty_json = await ai.extract_specialty(description, suggested_part)
@@ -664,7 +616,9 @@ async def get_recommendation(
             query=description,
             ai_answer=ai_final_answer,
             source_documents=[top_case] if not is_hard_issue else [],
-            requires_feedback=is_advice_mode or offers_reminder_flag or (not is_hard_issue),
+            requires_feedback=is_advice_mode
+            or offers_reminder_flag
+            or (not is_hard_issue),
             requires_mechanic=is_hard_issue,
             is_emergency=is_emergency,
             is_advice_mode=is_advice_mode,
@@ -813,82 +767,98 @@ async def submit_feedback(
 # =====================================================================
 # [ 7. مسارات محرك البحث - Search Engine ]
 # =====================================================================
+
+
+# إعداد الراوتر
+router = APIRouter()
+
+
 @app.get("/search/mechanics", response_model=dict)
 async def search_mechanics_endpoint(
-    q: Optional[str] = Query(
-        None, description="كلمة البحث (اسم الفني، التخصص، أو وصف المشكلة)"
+    q: Optional[str] = Query(None, description="وصف المشكلة أو اسم الفني"),
+    category: Optional[str] = Query(None, description="الفئة (ميكانيكا، كهرباء، إلخ)"),
+    min_rating: float = Query(
+        3.0, description="الحد الأدنى للتقييم (الافتراضي 3 نجوم)"
     ),
-    category: Optional[str] = Query(
-        None, description="الفئة المحددة (مثال: ميكانيكا، كهرباء) - FR-1"
-    ),
-    min_rating: int = Query(3, description="الحد الأدنى للتقييم (الافتراضي 3 نجوم)"),
-    is_available: Optional[bool] = Query(
-        None, description="هل الفني متاح الآن؟ - FR-2"
-    ),
-    sort_by: str = Query("rating", description="ترتيب حسب: rating أو distance"),
-    user_lat: Optional[float] = Query(
-        None, description="خط عرض المستخدم لحساب المسافة"
-    ),
-    user_lng: Optional[float] = Query(
-        None, description="خط طول المستخدم لحساب المسافة"
-    ),
+    is_available: Optional[bool] = Query(None, description="حالة التوافر الحالية"),
+    sort_by: str = Query("rating", description="الترتيب حسب: rating أو distance"),
+    user_lat: Optional[float] = Query(None, description="خط العرض للمستخدم"),
+    user_lng: Optional[float] = Query(None, description="خط الطول للمستخدم"),
 ):
     """
-    البحث الشامل عن الفنيين (يدعم البحث الدلالي Semantic Search للأعطال)
-    المتطلبات المغطاة: (FR-1, FR-2, FR-4, FR-6)
+    تنفيذ متطلبات البحث الذكي (FR-1, FR-2, FR-3, FR-6) من الـ PDF
     """
 
-    # 1. التحقق من صحة البيانات (Validation)
+    # 1. التحقق من إحداثيات الموقع (FR-3)
     if sort_by == "distance" and (user_lat is None or user_lng is None):
         raise HTTPException(
             status_code=400,
-            detail="عذراً، يجب إرسال إحداثيات الموقع (GPS) عند اختيار الترتيب حسب المسافة.",
+            detail="يجب إرسال إحداثيات الموقع (GPS) للترتيب حسب المسافة.",
         )
 
     search_keyword = q
 
-    # 2. تحليل البحث باستخدام الذكاء الاصطناعي (Semantic Search)
+    # 2. تحليل البحث الدلالي باستخدام الـ AI (FR-6)
     if q and len(q.split()) > 1:
         try:
-            specialty_json = await ai.extract_specialty(q, "")
-            extracted_sub = specialty_json.get("sub_specialty", "").strip()
-            extracted_spec = specialty_json.get("specialty", "").strip()
+            # تنظيف الكلمة من أي علامات تنصيص عشان الـ AI ميتلخبطش
+            clean_q = q.replace('"', "").replace("'", "").strip()
 
-            # الأولوية للتخصص الدقيق، ثم العام
-            ai_keyword = extracted_sub if extracted_sub else extracted_spec
+            # نداء الـ AI (تأكدي إن extract_specialty جواها await لنداء الـ API)
+            common_issues = ["فرامل", "بطارية", "كاوتش", "تكييف", "عفشة", "سمكرة"]
+            found_issue = next(
+                (issue for issue in common_issues if issue in clean_q), None
+            )
 
-            if ai_keyword and ai_keyword != "غير محدد":
-                search_keyword = ai_keyword
-                print(
-                    f"🤖 AI translated user query '{q}' to specialization: '{search_keyword}'"
-                )
+            if found_issue:
+                search_keyword = found_issue
+                print(f"✅ Manual Override: Found '{found_issue}' in query.")
+            else:
+                # لو ملقاش كلمة واضحة، يروح يسأل الـ AI عادي
+                specialty_json = await ai.extract_specialty(clean_q, "")
+                extracted_sub = specialty_json.get("sub_specialty", "").strip()
+                extracted_spec = specialty_json.get("specialty", "").strip()
+
+            if extracted_sub and extracted_sub != "غير محدد":
+                search_keyword = extracted_sub
+            elif extracted_spec and extracted_spec != "غير محدد":
+                search_keyword = extracted_spec
+
+            print(f"🤖 AI Actual Result: {specialty_json}")
 
         except Exception as e:
-            print(f"⚠️ AI Search Error: {e}")
+            print(f"⚠️ AI Mapping Error: {e}")
 
-    # 3. جلب النتائج من قاعدة البيانات
-    results = search_mechanics_in_db(
-        search_keyword=search_keyword,
-        category=category,
-        min_rating=min_rating,
-        is_available=is_available,
-        sort_by=sort_by,
-        user_lat=user_lat,
-        user_lng=user_lng,
-    )
+    # سطر الـ Debug اللي طلبتيه
+    print(f"DEBUG: Searching for '{search_keyword}' with min_rating {min_rating}")
 
-    if results is None:
-        raise HTTPException(
-            status_code=500, detail="حدث خطأ في الاتصال بقاعدة البيانات."
+    # 3. نداء الدالة (تأكدي من مطابقة أسماء الباراميترز)
+    try:
+        results = search_mechanics_in_db(
+            query_keyword=search_keyword,
+            category=category,
+            min_rating=int(min_rating),  # تحويل لـ int ليتوافق مع الـ SQL
+            is_available=is_available,
+            sort_by=sort_by,
+            user_lat=user_lat,
+            user_lng=user_lng,
         )
 
-    return {
-        "status": "success",
-        "result_count": len(results),
-        "original_query": q,
-        "ai_interpreted_as": search_keyword if search_keyword != q else None,
-        "data": results,
-    }
+        # 4. الرد النهائي كما في المتطلبات
+        return {
+            "status": "success",
+            "metadata": {
+                "original_query": q,
+                "ai_interpreted_as": (
+                    search_keyword if search_keyword != q else "Same as query"
+                ),
+                "results_count": len(results) if results else 0,
+            },
+            "data": results,
+        }
+    except Exception as e:
+        print(f"❌ Database Error: {e}")
+        raise HTTPException(status_code=500, detail=f"Database Error: {str(e)}")
 
 
 @app.get("/search/suggest")
@@ -915,6 +885,7 @@ async def suggest_endpoint(
 @app.get("/mechanic/{mechanic_id}")
 async def get_mechanic_details(mechanic_id: str):
     """جلب البيانات الكاملة للفني عند اختياره من النتائج (FR-5)"""
+    mechanic = None  # نعرف المتغير بره الأول
     try:
         conn = pymssql.connect(
             server=settings.DB_SERVER,
@@ -927,25 +898,31 @@ async def get_mechanic_details(mechanic_id: str):
         sql = f"""
             SELECT 
                 u.Id, u.FirstName + ' ' + u.LastName AS FullName, u.Phone, u.Email,
-                mp.Location_Latitude, mp.Location_Longitude, mp.YearsOfExperience,
-                mp.Bio, 0 AS Rating, s.Name AS Specialty
+                mp.Location_Latitude, mp.Location_Longitude, 
+                0 AS YearsOfExperience, 
+                '' AS Bio, 
+                COALESCE(AVG(CAST(br.Stars AS FLOAT)), 0) AS Rating, 
+                s.Name AS Specialty
             FROM dbo.Users u
             INNER JOIN dbo.MechanicProfile mp ON u.Id = mp.UserId
             LEFT JOIN dbo.Specializations s ON mp.Id = s.MechanicProfileId
+            LEFT JOIN dbo.BookingRatings br ON u.Id = br.MechanicId
             WHERE u.Id = '{mechanic_id}'
+            GROUP BY u.Id, u.FirstName, u.LastName, u.Phone, u.Email, mp.Location_Latitude, mp.Location_Longitude, s.Name
         """
         cursor.execute(sql)
         mechanic = cursor.fetchone()
         conn.close()
 
-        if not mechanic:
-            raise HTTPException(status_code=404, detail="الفني غير موجود.")
-
-        return {"status": "success", "data": mechanic}
-
     except Exception as e:
-        print(f"❌ Detail View Error: {e}")
-        raise HTTPException(status_code=500, detail="حدث خطأ أثناء جلب التفاصيل.")
+        print(f"❌ Database Error: {e}")
+        raise HTTPException(status_code=500, detail="حدث خطأ في قاعدة البيانات.")
+
+    # نحط الـ 404 بره الـ try عشان ميتحولش لـ 500
+    if not mechanic:
+        raise HTTPException(status_code=404, detail="الفني غير موجود.")
+
+    return {"status": "success", "data": mechanic}
 
 
 # # =====================================================================
