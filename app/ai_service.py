@@ -1,7 +1,6 @@
 import json
 import base64
 from openai import AsyncOpenAI
-from openai import OpenAI
 from app.models import Message
 from app.config import settings
 from datetime import datetime, timedelta
@@ -27,7 +26,7 @@ class AIService:
     # [ 2. محرك الدردشة والتشخيص (Chat & Diagnostics Engine) ]
     # =====================================================================
     async def generate_response(
-        self, chat_hist: list, context_docs: list = None, image_data_url: str = None
+            self, chat_hist: list, context_docs: list = None, image_data_url: str = None
     ) -> str:
         context_text = (
             "\n".join(context_docs)
@@ -66,7 +65,7 @@ class AIService:
                     break
 
         try:
-            response = self.client.chat.completions.create(
+            response = await self.client.chat.completions.create(
                 model=self.DEFAULT_MODEL,
                 messages=formatted_messages,
                 temperature=0.5,
@@ -85,7 +84,7 @@ class AIService:
         # قراءة النصوص من الصور (مثل الرخص والبطاقات) باستخدام الذكاء الاصطناعي.
         # """
         # try:
-        #     response = self.client.chat.completions.create(
+        #     response = await self.client.chat.completions.create(
         #         model=self.DEFAULT_MODEL,
         #         messages=[
         #             {
@@ -127,7 +126,7 @@ class AIService:
         رد بصيغة JSON: {{"specialty": "...", "sub_specialty": "..."}}"""
 
         try:
-            response = self.client.chat.completions.create(
+            response = await self.client.chat.completions.create(
                 model=self.DEFAULT_MODEL,
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -173,7 +172,7 @@ class AIService:
         """
 
         try:
-            response = self.client.chat.completions.create(
+            response = await self.client.chat.completions.create(
                 model=self.DEFAULT_MODEL,
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -214,7 +213,7 @@ class AIService:
         """
 
         try:
-            response = self.client.chat.completions.create(
+            response = await self.client.chat.completions.create(
                 model=self.DEFAULT_MODEL,
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -258,7 +257,7 @@ class AIService:
     # [ 6. محرك ترشيح قطع الغيار والروابط (Parts & Links Recommendation) ]
     # =====================================================================
     async def get_personalized_recommendations(
-        self, car_info: str, description: str
+            self, car_info: str, description: str
     ) -> dict:
         import urllib.parse
 
@@ -269,7 +268,7 @@ class AIService:
         user_prompt = f"""
         بناءً على سيارة {car_info}، رشح أهم قطعتي غيار لعلاج مشكلة: {description}.
         يجب أن تكون القطع مرتبطة تقنياً بالمشكلة.
-        
+
         الرد JSON فقط بالهيكل التالي:
         {{
             "suggested_parts": ["اسم القطعة بالعربي 1", "اسم القطعة بالعربي 2"],
@@ -278,7 +277,7 @@ class AIService:
         """
 
         try:
-            response = self.client.chat.completions.create(
+            response = await self.client.chat.completions.create(
                 model=self.DEFAULT_MODEL,
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -335,7 +334,7 @@ class AIService:
             return {"suggested_parts": [], "search_links": []}
 
     async def verify_document(
-        self, image_data: str, doc_type: str = "رخصة ورشة سيارات"
+            self, image_data: str, doc_type: str = "رخصة ورشة سيارات"
     ) -> dict:
         """
         فحص المستندات باستخدام Gemini 2.0 Flash عبر OpenRouter مع إرجاع JSON نظيف.
