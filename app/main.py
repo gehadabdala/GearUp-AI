@@ -87,32 +87,32 @@ def get_mechanics_from_db(specialty: str, sub_specialty: str):
 
     # تم دمج الـ Query بشكل سليم داخل الـ f-string
     query = f"""
-        SELECT TOP 15 
-            u.Id AS MechanicId, 
-            u.FirstName + ' ' + u.LastName AS Name, 
-            u.Phone, 
-            mp.Location_Latitude AS Latitude, 
-            mp.Location_Longitude AS Longitude,
-            COALESCE(AVG(CAST(br.Stars AS FLOAT)), 0) AS AverageRating,
-            CASE 
-                WHEN ss.Name LIKE N'%{sub_specialty}%' THEN 1 
-                WHEN s.Name LIKE N'%{specialty}%' THEN 2    
-                ELSE 3 
-            END AS Rank
-        FROM dbo.Users u
-        INNER JOIN dbo.MechanicProfile mp ON u.Id = mp.UserId
-        INNER JOIN dbo.Specializations s ON mp.Id = s.MechanicProfileId
-        LEFT JOIN dbo.SubSpecializations ss ON s.Id = ss.SpecializationId
-        LEFT JOIN dbo.BookingRatings br ON u.Id = br.MechanicId
-        WHERE mp.IsAvailable = 1 
-        AND (s.Name LIKE N'%{specialty}%' OR ss.Name LIKE N'%{sub_specialty}%')
-        GROUP BY 
-            u.Id, u.FirstName, u.LastName, u.Phone, 
-            mp.Location_Latitude, mp.Location_Longitude, 
-            ss.Name, s.Name
-        HAVING COALESCE(AVG(CAST(br.Stars AS FLOAT)), 0) >= 3
-        ORDER BY Rank, AverageRating DESC 
-    """
+            SELECT TOP 15 
+                u.Id AS UserId, 
+                u.FirstName + ' ' + u.LastName AS Name, 
+                u.Phone, 
+                mp.Location_Latitude AS Latitude, 
+                mp.Location_Longitude AS Longitude,
+                COALESCE(AVG(CAST(br.Stars AS FLOAT)), 0) AS AverageRating,
+                CASE 
+                    WHEN ss.Name LIKE N'%{sub_specialty}%' THEN 1 
+                    WHEN s.Name LIKE N'%{specialty}%' THEN 2    
+                    ELSE 3 
+                END AS Rank
+            FROM dbo.Users u
+            INNER JOIN dbo.MechanicProfile mp ON u.Id = mp.UserId
+            INNER JOIN dbo.Specializations s ON mp.Id = s.MechanicProfileId
+            LEFT JOIN dbo.SubSpecializations ss ON s.Id = ss.SpecializationId
+            LEFT JOIN dbo.BookingRatings br ON u.Id = br.MechanicId
+            WHERE mp.IsAvailable = 1 
+            AND (s.Name LIKE N'%{specialty}%' OR ss.Name LIKE N'%{sub_specialty}%')
+            GROUP BY 
+                u.Id, u.FirstName, u.LastName, u.Phone, 
+                mp.Location_Latitude, mp.Location_Longitude, 
+                ss.Name, s.Name
+            HAVING COALESCE(AVG(CAST(br.Stars AS FLOAT)), 0) >= 3 OR COALESCE(AVG(CAST(br.Stars AS FLOAT)), 0) = 0
+            ORDER BY Rank, AverageRating DESC 
+        """
 
     cursor.execute(query)
     mechanics = cursor.fetchall()
@@ -509,10 +509,13 @@ async def get_recommendation(
             if mechanics_list:
                 seen_ids = set()
                 for m in mechanics_list:
-                    m_id = m.get("UserId")
-                    if m_id not in seen_ids:
-                        mechanic_ids_list.append(str(m_id))
-                        seen_ids.add(m_id)
+                    # 🔴 التعديل هنا: بنقرأ الـ UserId
+                    m_id = m.get("UserId") or m.get("userid")
+
+                    if m_id and str(m_id).lower() != "none":
+                        if m_id not in seen_ids:
+                            mechanic_ids_list.append(str(m_id))
+                            seen_ids.add(m_id)
 
         # 8. بناء الرد النهائي وتوجيه الـ AI
         offers_reminder_flag = False

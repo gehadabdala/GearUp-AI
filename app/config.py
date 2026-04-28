@@ -26,4 +26,7 @@ class Settings:
     CHROMA_PATH = "./chroma_db"
     EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 
+    USE_LOCAL_AI = os.getenv("USE_LOCAL_AI") == "True"
+    LOCAL_THINKER_MODEL = os.getenv("LOCAL_THINKER_MODEL", "llama3")
+
 settings = Settings()
