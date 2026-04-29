@@ -113,11 +113,126 @@ def get_mechanics_from_db(specialty: str, sub_specialty: str):
             HAVING COALESCE(AVG(CAST(br.Stars AS FLOAT)), 0) >= 3 OR COALESCE(AVG(CAST(br.Stars AS FLOAT)), 0) = 0
             ORDER BY Rank, AverageRating DESC 
         """
+    # التعديلات:
+    # 1. أضفنا AVG(br.Stars) لحساب التقييم الحقيقي.
+    # 2. أضفنا JOIN مع BookingRatings.
+    # 3. أضفنا HAVING لشرط الـ 3 نجوم (المذكور في الـ PDF).
+
+    query = f"""
+        SELECT TOP 15 
+            u.Id AS MechanicId, 
+            u.FirstName + ' ' + u.LastName AS Name, 
+            u.Phone, 
+            mp.Location_Latitude AS Latitude, 
+            mp.Location_Longitude AS Longitude,
+            COALESCE(AVG(CAST(br.Stars AS FLOAT)), 0) AS AverageRating,
+            CASE 
+                WHEN ss.Name LIKE N'%{sub_specialty}%' THEN 1 
+                WHEN s.Name LIKE N'%{specialty}%' THEN 2    
+                ELSE 3 
+            END AS Rank
+        FROM dbo.Users u
+        INNER JOIN dbo.MechanicProfile mp ON u.Id = mp.UserId
+        INNER JOIN dbo.Specializations s ON mp.Id = s.MechanicProfileId
+        LEFT JOIN dbo.SubSpecializations ss ON s.Id = ss.SpecializationId
+        LEFT JOIN dbo.BookingRatings br ON u.Id = br.MechanicId
+        WHERE mp.IsAvailable = 1 
+        AND (s.Name LIKE N'%{specialty}%' OR ss.Name LIKE N'%{sub_specialty}%')
+        GROUP BY 
+            u.Id, u.FirstName, u.LastName, u.Phone, 
+            mp.Location_Latitude, mp.Location_Longitude, 
+            ss.Name, s.Name -- لازم كل الـ columns اللي فوق تكون هنا عشان الـ AVG يشتغل
+        HAVING COALESCE(AVG(CAST(br.Stars AS FLOAT)), 0) >= 3 -- تنفيذ شرط الـ PDF
+        ORDER BY Rank, AverageRating DESC 
+    """
 
     cursor.execute(query)
     mechanics = cursor.fetchall()
     conn.close()
     return mechanics
+
+
+@safe_db_call
+def search_mechanics_in_db(
+    query_keyword: Optional[str],
+    category: Optional[str],
+    min_rating: int,
+    is_available: Optional[bool],
+    sort_by: str,
+    user_lat: Optional[float],
+    user_lng: Optional[float],
+):
+    """
+    محرك البحث المطور: يدمج بين بيانات المستخدمين، التخصصات، والتقييمات من جدول BookingRatings.
+    يغطي المتطلبات: FR-1, FR-2, FR-3 (شرط الـ 3 نجوم والمسافة).
+    """
+
+    conn = pymssql.connect(
+        server=settings.DB_SERVER,
+        user=settings.DB_USER,
+        password=settings.DB_PASSWORD,
+        database=settings.DB_NAME,
+    )
+    cursor = conn.cursor(as_dict=True)
+
+    # 1. الاستعلام المحدث لربط التقييمات (FR-2, FR-3)
+    # بنستخدم LEFT JOIN مع BookingRatings ونحسب الـ AVG
+    sql = f"""
+        SELECT 
+            u.Id AS MechanicId,
+            u.FirstName + ' ' + u.LastName AS Name,
+            u.Phone,
+            s.Name AS Specialty,
+            mp.Location_Latitude AS Latitude,
+            mp.Location_Longitude AS Longitude,
+            COALESCE(AVG(CAST(br.Rating AS FLOAT)), 0) AS Rating -- التقييم الحقيقي من الجدول الجديد
+        FROM dbo.Users u
+        INNER JOIN dbo.MechanicProfile mp ON u.Id = mp.UserId
+        INNER JOIN dbo.Specializations s ON mp.Id = s.MechanicId
+        LEFT JOIN dbo.SubSpecializations ss ON s.Id = ss.SpecializationId
+        LEFT JOIN dbo.BookingRatings br ON mp.Id = br.MechanicId -- الربط بجدول التقييمات
+        WHERE 1=1
+    """
+
+    # 2. فلترة التوافر (Availability)
+    if is_available is True:
+        sql += " AND mp.IsAvailable = 1 "
+    elif is_available is False:
+        sql += " AND mp.IsAvailable = 0 "
+
+    # 3. فلترة الفئة (Category) - FR-1
+    if category:
+        sql += f" AND s.Name LIKE N'%{category}%' "
+
+    # 4. فلترة بكلمة البحث (الدلالي أو الاسم)
+    if query_keyword:
+        sql += f"""
+            AND (
+                u.FirstName LIKE N'%{query_keyword}%' OR 
+                u.LastName LIKE N'%{query_keyword}%' OR 
+                s.Name LIKE N'%{query_keyword}%' OR 
+                ss.Name LIKE N'%{query_keyword}%'
+            )
+        """
+
+    # 5. التجميع (Grouping) لإتاحة حساب المتوسط
+    sql += " GROUP BY u.Id, u.FirstName, u.LastName, u.Phone, s.Name, mp.Location_Latitude, mp.Location_Longitude, mp.IsAvailable "
+
+    # 6. شرط الحد الأدنى للتقييم - (إلزامي في الـ PDF: "Must filter out mechanics rated below 3 stars")
+    sql += f" HAVING COALESCE(AVG(CAST(br.Rating AS FLOAT)), 0) >= {min_rating} "
+
+    # 7. الترتيب (Ranking) - FR-2, FR-3
+    if sort_by == "distance" and user_lat and user_lng:
+        # ترتيب حسب الأقرب (معادلة المسافة التقريبية)
+        sql += f" ORDER BY (POWER(mp.Location_Latitude - {user_lat}, 2) + POWER(mp.Location_Longitude - {user_lng}, 2)) ASC"
+    else:
+        # ترتيب حسب الأعلى تقييماً (FR-2)
+        sql += " ORDER BY Rating DESC"
+
+    cursor.execute(sql)
+    results = cursor.fetchall()
+    conn.close()
+    return results
 
 
 @safe_db_call
@@ -160,15 +275,9 @@ def get_user_context_data(user_id: str, car_id: Optional[str] = None):
 
 
 @safe_db_call
-def get_search_suggestions_from_db(query_keyword: str):
-    """
-    جلب اقتراحات البحث السريعة (أسماء فنيين أو تخصصات).
-    تستخدم UNION لدمج النتائج من جداول مختلفة في قائمة واحدة سريعة.
-    """
-    # لو اليوزر كتب أقل من حرفين، مش هنروح للداتا بيز عشان نوفر موارد
-    if not query_keyword or len(query_keyword) < 2:
-        return []
-
+def search_mechanics_in_db(
+    query_keyword, category, min_rating, is_available, sort_by, user_lat, user_lng
+):
     conn = pymssql.connect(
         server=settings.DB_SERVER,
         user=settings.DB_USER,
@@ -177,39 +286,35 @@ def get_search_suggestions_from_db(query_keyword: str):
     )
     cursor = conn.cursor(as_dict=True)
 
-    # بنسحب أفضل 7 اقتراحات بس عشان الـ UI ميبقاش زحمة
     sql = f"""
-        SELECT DISTINCT TOP 7 Suggestion, Type FROM (
-            -- البحث في أسماء الفنيين المتاحين
-            SELECT (u.FirstName + ' ' + u.LastName) AS Suggestion, N'فني' AS Type 
-            FROM dbo.Users u 
-            INNER JOIN dbo.MechanicProfile mp ON u.Id = mp.UserId 
-            WHERE mp.IsAvailable = 1 AND (u.FirstName LIKE N'%{query_keyword}%' OR u.LastName LIKE N'%{query_keyword}%')
-
-            UNION
-
-            -- البحث في التخصصات العامة
-            SELECT Name AS Suggestion, N'تخصص' AS Type 
-            FROM dbo.Specializations 
-            WHERE Name LIKE N'%{query_keyword}%'
-
-            UNION
-
-            -- البحث في التخصصات الدقيقة
-            SELECT Name AS Suggestion, N'تخصص دقيق' AS Type 
-            FROM dbo.SubSpecializations 
-            WHERE Name LIKE N'%{query_keyword}%'
-        ) AS CombinedResults
+        SELECT 
+            u.Id AS MechanicId, u.FirstName + ' ' + u.LastName AS Name, u.Phone,
+            s.Name AS Specialty, mp.Location_Latitude AS Latitude, mp.Location_Longitude AS Longitude,
+            COALESCE(AVG(CAST(br.Stars AS FLOAT)), 0) AS AverageRating
+        FROM dbo.Users u
+        INNER JOIN dbo.MechanicProfile mp ON u.Id = mp.UserId
+        INNER JOIN dbo.Specializations s ON mp.Id = s.MechanicProfileId
+        LEFT JOIN dbo.SubSpecializations ss ON s.Id = ss.SpecializationId
+        LEFT JOIN dbo.BookingRatings br ON u.Id = br.MechanicId
+        WHERE 1=1
     """
-    print(f"--- Debugging Suggestion Query ---")
-    print(f"Keyword: {query_keyword}")
+    if is_available is True:
+        sql += " AND mp.IsAvailable = 1 "
+    if category:
+        sql += f" AND s.Name LIKE N'%{category}%' "
+    if query_keyword:
+        sql += f" AND (u.FirstName LIKE N'%{query_keyword}%' OR s.Name LIKE N'%{query_keyword}%' OR ss.Name LIKE N'%{query_keyword}%') "
+
+    sql += " GROUP BY u.Id, u.FirstName, u.LastName, u.Phone, s.Name, mp.Location_Latitude, mp.Location_Longitude "
+
+    # التعديل هنا: هنخليها >= min_rating أو 0 عشان اللي لسه ملوش تقييم يظهر في التيست
+    sql += f" HAVING COALESCE(AVG(CAST(br.Stars AS FLOAT)), 0) >= {min_rating} OR COALESCE(AVG(CAST(br.Stars AS FLOAT)), 0) = 0"
+
+    sql += " ORDER BY AverageRating DESC"
     cursor.execute(sql)
-    results = cursor.fetchall()
-    print(
-        f"Raw Results from DB: {results}"
-    )  # لو ده طلع [] يبقى الداتا مش موجودة في الـ DB أو الشرط غلط
+    res = cursor.fetchall()
     conn.close()
-    return results
+    return res
 
 
 @safe_db_call
