@@ -467,7 +467,9 @@ async def get_recommendation(
     query_data: str = Form(...),
     user_id: Optional[str] = Form(None),
     car_id: Optional[str] = Form(None),
-    file: Optional[UploadFile] = File(None),
+    file1: Optional[UploadFile] = File(None),  # الصورة الأولى (اختيارية)
+    file2: Optional[UploadFile] = File(None),  # الصورة التانية (اختيارية)
+    file3: Optional[UploadFile] = File(None),
 ):
     try:
         # 1. تجهيز البيانات والصورة
@@ -475,14 +477,16 @@ async def get_recommendation(
         messages = [Message(**m) for m in data_dict.get("messages", [])]
         description = messages[-1].content
 
-        image_data_url = []
-        if file:
+        image_data_urls = []
+        files = [f for f in [file1, file2, file3] if f is not None]
+        if files:
+            for file in files:
 
-            contents = await file.read()
+                contents = await file.read()
 
-            encoded = base64.b64encode(contents).decode("utf-8")
+                encoded = base64.b64encode(contents).decode("utf-8")
 
-            image_data_url = f"data:{file.content_type};base64,{encoded}"
+                image_data_urls.append(f"data:{file.content_type};base64,{encoded}")
         # 2. جلب سياق المستخدم
         user_data = get_user_context_data(user_id, car_id)
         user_context = ""
@@ -548,7 +552,7 @@ async def get_recommendation(
         if is_greeting and not is_emergency and not needs_mechanic:
             instructions = "أنت GearUp AI، خبير سيارات ودود. رد بترحيب وذكر بتخصصك فقط."
             ai_chat_answer = await ai.generate_response(
-                messages, [user_context, instructions], image_data_url
+                messages, [user_context, instructions], image_data_urls
             )
             return RecommendationResponse(
                 query=description,
@@ -700,7 +704,7 @@ async def get_recommendation(
             instructions = f"{user_context} المشكلة بسيطة ويمكن حلها. الحل المقترح: {suggested_solution}. {parts_hint} التنسيق: خطوات الحل."
 
         ai_final_answer = await ai.generate_response(
-            messages, [instructions], image_data_url
+            messages, [instructions], image_data_urls
         )
 
         # 9. استخراج التذكير وتجهيزه للفرونت إند
@@ -738,7 +742,7 @@ async def get_recommendation(
             required_service=auto_fill_data["required_service"],
             service_location_type=auto_fill_data["location"],
             use_current_location=auto_fill_data["gps"],
-            has_attachment=True if file else False,
+            has_attachment=True if files and len(files) > 0 else False,
             suggested_reminder_title=reminder_fields[0],
             suggested_reminder_desc=reminder_fields[1],
             suggested_frequency=reminder_fields[2],

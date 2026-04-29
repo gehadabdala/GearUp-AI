@@ -26,7 +26,7 @@ class AIService:
     # [ 2. محرك الدردشة والتشخيص (Chat & Diagnostics Engine) ]
     # =====================================================================
     async def generate_response(
-            self, chat_hist: list, context_docs: list = None, image_data_url: str = None
+        self, chat_hist: list, context_docs: list = None, image_data_urls: list = None
     ) -> str:
         context_text = (
             "\n".join(context_docs)
@@ -54,16 +54,18 @@ class AIService:
         for msg in chat_hist:
             formatted_messages.append({"role": msg.role, "content": msg.content})
 
-        if image_data_url:
+        if image_data_urls and len(image_data_urls) > 0:
             for i in range(len(formatted_messages) - 1, -1, -1):
                 if formatted_messages[i]["role"] == "user":
                     last_content = formatted_messages[i]["content"]
-                    formatted_messages[i]["content"] = [
-                        {"type": "text", "text": last_content},
-                        {"type": "image_url", "image_url": {"url": image_data_url}},
-                    ]
-                    break
+                    content_list = [{"type": "text", "text": last_content}]
+                    for img_url in image_data_urls:
+                        content_list.append(
+                            {"type": "image_url", "image_url": {"url": img_url}}
+                        )
 
+                    formatted_messages[i]["content"] = content_list
+                    break
         try:
             response = await self.client.chat.completions.create(
                 model=self.DEFAULT_MODEL,
@@ -257,7 +259,7 @@ class AIService:
     # [ 6. محرك ترشيح قطع الغيار والروابط (Parts & Links Recommendation) ]
     # =====================================================================
     async def get_personalized_recommendations(
-            self, car_info: str, description: str
+        self, car_info: str, description: str
     ) -> dict:
         import urllib.parse
 
@@ -334,7 +336,7 @@ class AIService:
             return {"suggested_parts": [], "search_links": []}
 
     async def verify_document(
-            self, image_data: str, doc_type: str = "رخصة ورشة سيارات"
+        self, image_data: str, doc_type: str = "رخصة ورشة سيارات"
     ) -> dict:
         """
         فحص المستندات باستخدام Gemini 2.0 Flash عبر OpenRouter مع إرجاع JSON نظيف.
