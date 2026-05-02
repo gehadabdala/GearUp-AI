@@ -269,6 +269,61 @@ def search_mechanics_in_db(
 
 
 @safe_db_call
+def get_search_suggestions_from_db(q: str):
+    """
+    جلب اقتراحات البحث بناءً على أول حرفين أو أكثر مع تحديد النوع (اسم فني / تخصص).
+    """
+    conn = pymssql.connect(
+        server=settings.DB_SERVER,
+        user=settings.DB_USER,
+        password=settings.DB_PASSWORD,
+        database=settings.DB_NAME,
+    )
+    cursor = conn.cursor(as_dict=True)
+
+    # بنستخدم UNION عشان نجمع الأسماء والتخصصات وكل واحد ياخد الـ Type بتاعه
+    query = f"""
+        SELECT TOP 10 Suggestion, Type
+        FROM (
+            -- اقتراحات بأسماء الفنيين
+            SELECT 
+                u.FirstName + ' ' + u.LastName AS Suggestion, 
+                N'اسم فني' AS Type
+            FROM dbo.Users u
+            INNER JOIN dbo.MechanicProfile mp ON u.Id = mp.UserId -- بنضمن إنه ميكانيكي كامل البيانات
+            WHERE u.Role = 2 
+            AND (u.FirstName LIKE N'%{q}%' OR u.LastName LIKE N'%{q}%')
+            
+            UNION
+            
+            -- اقتراحات بالتخصصات الدقيقة (Sub-Specialties)
+            SELECT 
+                ss.Name AS Suggestion, 
+                N'تخصص دقيق' AS Type
+            FROM dbo.SubSpecializations ss
+            WHERE ss.Name LIKE N'%{q}%'
+            
+            UNION
+            
+            -- اقتراحات بالتخصصات العامة
+            SELECT 
+                s.Name AS Suggestion, 
+                N'تخصص عام' AS Type
+            FROM dbo.Specializations s
+            WHERE s.Name LIKE N'%{q}%'
+        ) AS CombinedSuggestions
+        ORDER BY Type DESC, Suggestion ASC
+    """
+
+    cursor.execute(query)
+    results = cursor.fetchall()
+    conn.close()
+
+    # هنا هنرجع الـ list of dicts زي ما هي لأن cursor(as_dict=True) بيقوم بالواجب
+    return results
+
+
+@safe_db_call
 def get_mechanic_document_path(mechanic_id: str):
     """
     بتروح لجدول MechanicDocuments وتسحب قيمة الـ FilePath
