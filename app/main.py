@@ -74,7 +74,7 @@ def safe_db_call(func):
 def get_mechanics_from_db(specialty: str, sub_specialty: str):
     """
     جلب أفضل 15 فني متاحين بناءً على التخصص والتقييم.
-    المنطق: Rank 1 للتخصص الدقيق، Rank 2 للتخصص العام، مع استبعاد أقل من 3 نجوم.
+    المنطق: Rank 1 للتخصص الدقيق، Rank 2 للتخصص العام، مع استبعاد أقل من 3 نجوم (والسماح للجداد بـ 0).
     """
     conn = pymssql.connect(
         server=settings.DB_SERVER,
@@ -83,39 +83,6 @@ def get_mechanics_from_db(specialty: str, sub_specialty: str):
         database=settings.DB_NAME,
     )
     cursor = conn.cursor(as_dict=True)
-
-    # تم دمج الـ Query بشكل سليم داخل الـ f-string
-    query = f"""
-            SELECT TOP 15 
-                u.Id AS UserId, 
-                u.FirstName + ' ' + u.LastName AS Name, 
-                u.Phone, 
-                mp.Location_Latitude AS Latitude, 
-                mp.Location_Longitude AS Longitude,
-                COALESCE(AVG(CAST(br.Stars AS FLOAT)), 0) AS AverageRating,
-                CASE 
-                    WHEN ss.Name LIKE N'%{sub_specialty}%' THEN 1 
-                    WHEN s.Name LIKE N'%{specialty}%' THEN 2    
-                    ELSE 3 
-                END AS Rank
-            FROM dbo.Users u
-            INNER JOIN dbo.MechanicProfile mp ON u.Id = mp.UserId
-            INNER JOIN dbo.Specializations s ON mp.Id = s.MechanicProfileId
-            LEFT JOIN dbo.SubSpecializations ss ON s.Id = ss.SpecializationId
-            LEFT JOIN dbo.BookingRatings br ON u.Id = br.MechanicId
-            WHERE mp.IsAvailable = 1 
-            AND (s.Name LIKE N'%{specialty}%' OR ss.Name LIKE N'%{sub_specialty}%')
-            GROUP BY 
-                u.Id, u.FirstName, u.LastName, u.Phone, 
-                mp.Location_Latitude, mp.Location_Longitude, 
-                ss.Name, s.Name
-            HAVING COALESCE(AVG(CAST(br.Stars AS FLOAT)), 0) >= 3 OR COALESCE(AVG(CAST(br.Stars AS FLOAT)), 0) = 0
-            ORDER BY Rank, AverageRating DESC 
-        """
-    # التعديلات:
-    # 1. أضفنا AVG(br.Stars) لحساب التقييم الحقيقي.
-    # 2. أضفنا JOIN مع BookingRatings.
-    # 3. أضفنا HAVING لشرط الـ 3 نجوم (المذكور في الـ PDF).
 
     query = f"""
         SELECT TOP 15 
@@ -132,16 +99,17 @@ def get_mechanics_from_db(specialty: str, sub_specialty: str):
             END AS Rank
         FROM dbo.Users u
         INNER JOIN dbo.MechanicProfile mp ON u.Id = mp.UserId
-        INNER JOIN dbo.Specializations s ON mp.Id = s.MechanicProfileId
-        LEFT JOIN dbo.SubSpecializations ss ON s.Id = ss.SpecializationId
+        LEFT JOIN dbo.Specializations s ON mp.Id = s.MechanicProfileId
+        LEFT JOIN dbo.SubSpecializationsForMechanic ssm ON u.Id = ssm.MechanicId 
+        LEFT JOIN dbo.SubSpecializations ss ON ssm.SubSpecializationId = ss.Id
         LEFT JOIN dbo.BookingRatings br ON u.Id = br.MechanicId
         WHERE mp.IsAvailable = 1 
         AND (s.Name LIKE N'%{specialty}%' OR ss.Name LIKE N'%{sub_specialty}%')
         GROUP BY 
             u.Id, u.FirstName, u.LastName, u.Phone, 
             mp.Location_Latitude, mp.Location_Longitude, 
-            ss.Name, s.Name -- لازم كل الـ columns اللي فوق تكون هنا عشان الـ AVG يشتغل
-        HAVING COALESCE(AVG(CAST(br.Stars AS FLOAT)), 0) >= 3 -- تنفيذ شرط الـ PDF
+            ss.Name, s.Name
+        HAVING COALESCE(AVG(CAST(br.Stars AS FLOAT)), 0) >= 3 OR COALESCE(AVG(CAST(br.Stars AS FLOAT)), 0) = 0
         ORDER BY Rank, AverageRating DESC 
     """
 
@@ -149,8 +117,6 @@ def get_mechanics_from_db(specialty: str, sub_specialty: str):
     mechanics = cursor.fetchall()
     conn.close()
     return mechanics
-
-
 @safe_db_call
 def get_user_context_data(user_id: str, car_id: Optional[str] = None):
     """
