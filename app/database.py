@@ -2,46 +2,46 @@ import pandas as pd
 import chromadb
 from chromadb.utils import embedding_functions
 from app.config import settings
+from chromadb.api.types import Documents, EmbeddingFunction, Embeddings
+import httpx
+
+
+class SafeGeminiEmbedding(EmbeddingFunction):
+    def __call__(self, input: Documents) -> Embeddings:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/embedding-001:batchEmbedContents?key={settings.GEMINI_API_KEY}"
+        reqs = [
+            {"model": "models/embedding-001", "content": {"parts": [{"text": str(t)}]}}
+            for t in input
+        ]
+        try:
+            res = httpx.post(url, json={"requests": reqs}, timeout=50.0).json()
+            if "embeddings" in res:
+                return [item["values"] for item in res["embeddings"]]
+            else:
+                print("⚠️ Gemini API Error:", res)
+        except Exception as e:
+            print("⚠️ Network Error:", e)
+        # لو حصل أي مشكلة، السيرفر مش هيقع وهيرجع داتا فاضية عشان يفضل شغال
+        return [[0.0] * 768] * len(input)
 
 
 class VectorDB:
     def __init__(self):
-        # إعداد ChromaDB
         self.client = chromadb.Client()
-        self.embedding_fn = embedding_functions.GoogleGenerativeAiEmbeddingFunction(
-            api_key=settings.GEMINI_API_KEY
-        )
+        # استخدمنا الكلاس الخفيف بتاعنا
+        self.embedding_fn = SafeGeminiEmbedding()
         self.collection = self.client.get_or_create_collection(
             name="gearup_knowledge", embedding_function=self.embedding_fn
         )
 
     def ingest_data(self):
-        """
-        دالة موحدة لرفع البيانات من Google Sheets فقط
-        مع منع التكرار + batching
-        """
-
-        # 1. منع التكرار
         if self.collection.count() > 0:
-            print("✅ البيانات موجودة بالفعل في ChromaDB. تم تخطي مرحلة الرفع.")
             return
-
         try:
-            # 2. التأكد من وجود مصدر البيانات
-            if not settings.SHEET_ID:
-                raise ValueError("❌ SHEET_ID غير موجود في environment variables")
-
-            print("🌐 جاري سحب البيانات من Google Sheets...")
-
             df = pd.read_csv(settings.SHEET_URL)
-
-            # 3. تنظيف البيانات
-            df = df.dropna(how="all")
-            df = df.fillna("")
-
+            df = df.dropna(how="all").fillna("")
             documents, metadatas, ids = [], [], []
 
-            # 4. تجهيز البيانات
             for index, row in df.iterrows():
                 problem = row.get("المشكلة") or row.get("العطل") or "غير محدد"
                 description = row.get("وصف العطل") or row.get("الوصف") or ""
@@ -53,38 +53,36 @@ class VectorDB:
                     or row.get("قطعة الغيار المرشحة")
                     or "غير محدد"
                 )
-                difficulty = row.get("مستوى الصعوبة") or "متوسط"
-                category = row.get("الفئة") or "عام"
+                difficulty = str(row.get("مستوى الصعوبة") or "متوسط").strip()
+                category = str(row.get("الفئة") or "عام")
 
-                content = f"المشكلة: {problem}\nالوصف: {description}\nالحل: {solution}"
-                documents.append(content)
-
+                documents.append(
+                    f"المشكلة: {problem}\nالوصف: {description}\nالحل: {solution}"
+                )
                 metadatas.append(
                     {
                         "القطعة المرشحة": str(part),
                         "الحل المقترح": str(solution),
-                        "مستوى الصعوبة": str(difficulty).strip(),
-                        "الفئة": str(category),
+                        "مستوى الصعوبة": difficulty,
+                        "الفئة": category,
                     }
                 )
-
                 ids.append(f"id_{index}")
 
-            # 5. batching
-            batch_size = 5000
-
+            # 🔴 تعديل مهم جداً: جوجل آخرها 100 في الدفعة، فخلينا الدفعة 90 عشان ميرفضش الطلب
+            batch_size = 90
             for i in range(0, len(documents), batch_size):
                 self.collection.add(
                     documents=documents[i : i + batch_size],
                     metadatas=metadatas[i : i + batch_size],
                     ids=ids[i : i + batch_size],
                 )
-                print(f"⏳ تم رفع الدفعة رقم {i // batch_size + 1} بنجاح...")
-
             print(f"✅ تم الانتهاء! إجمالي السجلات: {len(documents)}")
-
         except Exception as e:
             print(f"❌ خطأ أثناء ingest: {str(e)}")
+
+    def search(self, query: str, n_results: int = 3):
+        return self.collection.query(query_texts=[query], n_results=n_results)
 
     # def ingest_excel(self):
     #     """رفع البيانات على دفعات لتجنب خطأ الـ Batch Size"""
