@@ -390,6 +390,8 @@ async def startup_event():
 
     # تحميل البيانات
     # db.ingest_data()
+    print("🚀 Server is Live! Starting background ingestion automatically...")
+    asyncio.create_task(asyncio.to_thread(db.ingest_data))
 
 
 # 🟢 ضيفنا الـ Endpoint ده عشان نكلمه يدوي بعد ما الموقع يبقى Live

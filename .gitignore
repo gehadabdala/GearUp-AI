@@ -23,7 +23,7 @@ __pycache__/
 # 4. Databases & Data Files
 # ==========================================
 chroma_db/
-# chromadb/
+chromadb/
 *.xlsx
 
 # ==========================================
