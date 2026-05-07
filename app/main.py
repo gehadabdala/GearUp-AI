@@ -3,7 +3,7 @@ import json
 import base64
 import httpx
 from typing import List, Optional
-
+import asyncio
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, FastAPI, HTTPException, UploadFile, File, Form, Query
@@ -389,7 +389,21 @@ async def startup_event():
     ai = AIService()
 
     # تحميل البيانات
-    db.ingest_data()
+    # db.ingest_data()
+
+
+# 🟢 ضيفنا الـ Endpoint ده عشان نكلمه يدوي بعد ما الموقع يبقى Live
+@app.post("/run-ingest")
+async def trigger_ingestion():
+    if db is None:
+        return {"status": "error", "message": "Database not initialized"}
+
+    # asyncio.to_thread بيشغل العملية الطويلة دي في الخلفية عشان الموقع يفضل سريع
+    asyncio.create_task(asyncio.to_thread(db.ingest_data))
+    return {
+        "status": "success",
+        "message": "جاري سحب البيانات في الخلفية. يمكنك استخدام الموقع الآن!",
+    }
 
 
 # =====================================================================
