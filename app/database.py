@@ -8,9 +8,8 @@ class VectorDB:
     def __init__(self):
         # إعداد ChromaDB
         self.client = chromadb.Client()
-        self.embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
-            model_name=settings.EMBEDDING_MODEL
-        )
+        self.embedding_fn = embedding_functions.DefaultEmbeddingFunction()
+
         self.collection = self.client.get_or_create_collection(
             name="gearup_knowledge", embedding_function=self.embedding_fn
         )
