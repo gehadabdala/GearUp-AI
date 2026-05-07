@@ -81,6 +81,7 @@ def get_mechanics_from_db(specialty: str, sub_specialty: str):
         user=settings.DB_USER,
         password=settings.DB_PASSWORD,
         database=settings.DB_NAME,
+        charset="utf8",
     )
     cursor = conn.cursor(as_dict=True)
 
