@@ -4,7 +4,8 @@ from openai import AsyncOpenAI
 from app.models import Message
 from app.config import settings
 from datetime import datetime, timedelta
-from app.local_llm import simple_llm_service
+
+# from app.local_llm import simple_llm_service
 import urllib.parse
 
 
@@ -233,27 +234,14 @@ class AIService:
             return json.loads(clean_json)
 
         except Exception as e:
-            print(f"❌ [Intent Analysis Error]: {e} - Falling back to local model...")
-            try:
-                local_prompt = (
-                    f"System: {system_prompt}\nUser: {user_prompt}\nAssistant: "
-                )
-                local_resp = simple_llm_service.generate(
-                    prompt=local_prompt, max_tokens=200, temperature=0.0
-                )
-                clean_json = (
-                    local_resp.replace("```json", "").replace("```", "").strip()
-                )
-                return json.loads(clean_json)
-            except Exception as local_e:
-                print(f"❌ [Local LLM Intent Error]: {local_e}")
-                # قيم احتياطية آمنة
-                return {
-                    "is_emergency": False,
-                    "is_advice": False,
-                    "is_greeting": False,
-                    "needs_mechanic": False,
-                }
+            print(f"❌ [Local LLM Intent Error]: {local_e}")
+            # قيم احتياطية آمنة
+            return {
+                "is_emergency": False,
+                "is_advice": False,
+                "is_greeting": False,
+                "needs_mechanic": False,
+            }
 
     # =====================================================================
     # [ 6. محرك ترشيح قطع الغيار والروابط (Parts & Links Recommendation) ]
