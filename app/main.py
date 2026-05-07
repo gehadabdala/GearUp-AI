@@ -117,6 +117,8 @@ def get_mechanics_from_db(specialty: str, sub_specialty: str):
     mechanics = cursor.fetchall()
     conn.close()
     return mechanics
+
+
 @safe_db_call
 def get_user_context_data(user_id: str, car_id: Optional[str] = None):
     """
@@ -130,6 +132,7 @@ def get_user_context_data(user_id: str, car_id: Optional[str] = None):
         user=settings.DB_USER,
         password=settings.DB_PASSWORD,
         database=settings.DB_NAME,
+        charset="utf8",
     )
     cursor = conn.cursor(as_dict=True)
 
