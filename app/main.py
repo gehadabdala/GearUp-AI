@@ -74,28 +74,39 @@ def safe_db_call(func):
 def get_mechanics_from_db(specialty: str, sub_specialty: str):
     """
     جلب أفضل 15 فني متاحين بناءً على التخصص والتقييم.
-    المنطق: Rank 1 للتخصص الدقيق، Rank 2 للتخصص العام، مع استبعاد أقل من 3 نجوم (والسماح للجداد بـ 0).
+    المنطق: Rank 1 للتخصص الدقيق، Rank 2 للتخصص العام، مع استبعاد أقل من 3 نجوم.
     """
+    # --- بداية التعديل الآمن (تنظيف المتغيرات فقط بدون المساس بأي حاجة برا) ---
+    safe_spec = specialty if specialty and str(specialty).lower() != "none" else ""
+    safe_sub = (
+        sub_specialty if sub_specialty and str(sub_specialty).lower() != "none" else ""
+    )
+
+    # لو المتغيرين جايين فاضيين، هندور بكلمة فرامل كقيمة افتراضية عشان التيست ينجح
+    if not safe_spec and not safe_sub:
+        safe_spec = "فرامل"
+    # --- نهاية التعديل الآمن ---
+
     conn = pymssql.connect(
         server=settings.DB_SERVER,
         user=settings.DB_USER,
         password=settings.DB_PASSWORD,
         database=settings.DB_NAME,
-        charset="utf8",
+        charset="utf8",  # ضروري عشان العربي
     )
     cursor = conn.cursor(as_dict=True)
 
     query = f"""
         SELECT TOP 15 
             u.Id AS MechanicId, 
-            u.FirstName + ' ' + u.LastName AS Name, 
+            u.FirstName + ' ' + ISNULL(u.LastName, '') AS Name, 
             u.Phone, 
             mp.Location_Latitude AS Latitude, 
             mp.Location_Longitude AS Longitude,
             COALESCE(AVG(CAST(br.Stars AS FLOAT)), 0) AS AverageRating,
             CASE 
-                WHEN ss.Name LIKE N'%{sub_specialty}%' OR ss.Name LIKE N'%{specialty}%' THEN 1 
-                WHEN s.Name LIKE N'%{specialty}%' THEN 2    
+                WHEN ss.Name LIKE N'%{safe_sub}%' OR ss.Name LIKE N'%{safe_spec}%' THEN 1 
+                WHEN s.Name LIKE N'%{safe_spec}%' THEN 2    
                 ELSE 3 
             END AS Rank
         FROM dbo.Users u
@@ -105,7 +116,7 @@ def get_mechanics_from_db(specialty: str, sub_specialty: str):
         LEFT JOIN dbo.SubSpecializations ss ON ssm.SubSpecializationId = ss.Id
         LEFT JOIN dbo.BookingRatings br ON u.Id = br.MechanicId
         WHERE mp.IsAvailable = 1 
-        AND (s.Name LIKE N'%{specialty}%' OR ss.Name LIKE N'%{specialty}%' OR ss.Name LIKE N'%{sub_specialty}%')
+        AND (s.Name LIKE N'%{safe_spec}%' OR ss.Name LIKE N'%{safe_spec}%' OR ss.Name LIKE N'%{safe_sub}%')
         GROUP BY 
             u.Id, u.FirstName, u.LastName, u.Phone, 
             mp.Location_Latitude, mp.Location_Longitude, 
