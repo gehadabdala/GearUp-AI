@@ -94,7 +94,7 @@ def get_mechanics_from_db(specialty: str, sub_specialty: str):
             mp.Location_Longitude AS Longitude,
             COALESCE(AVG(CAST(br.Stars AS FLOAT)), 0) AS AverageRating,
             CASE 
-                WHEN ss.Name LIKE N'%{sub_specialty}%' THEN 1 
+                WHEN ss.Name LIKE N'%{sub_specialty}%' OR ss.Name LIKE N'%{specialty}%' THEN 1 
                 WHEN s.Name LIKE N'%{specialty}%' THEN 2    
                 ELSE 3 
             END AS Rank
@@ -105,7 +105,7 @@ def get_mechanics_from_db(specialty: str, sub_specialty: str):
         LEFT JOIN dbo.SubSpecializations ss ON ssm.SubSpecializationId = ss.Id
         LEFT JOIN dbo.BookingRatings br ON u.Id = br.MechanicId
         WHERE mp.IsAvailable = 1 
-        AND (s.Name LIKE N'%{specialty}%' OR ss.Name LIKE N'%{sub_specialty}%')
+        AND (s.Name LIKE N'%{specialty}%' OR ss.Name LIKE N'%{specialty}%' OR ss.Name LIKE N'%{sub_specialty}%')
         GROUP BY 
             u.Id, u.FirstName, u.LastName, u.Phone, 
             mp.Location_Latitude, mp.Location_Longitude, 
