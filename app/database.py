@@ -3,16 +3,16 @@ import chromadb
 from chromadb.utils import embedding_functions
 from app.config import settings
 
+
 class VectorDB:
     def __init__(self):
         # إعداد ChromaDB
-        self.client = chromadb.PersistentClient(path=settings.CHROMA_PATH)
+        self.client = chromadb.Client()
         self.embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
             model_name=settings.EMBEDDING_MODEL
         )
         self.collection = self.client.get_or_create_collection(
-            name="gearup_knowledge",
-            embedding_function=self.embedding_fn
+            name="gearup_knowledge", embedding_function=self.embedding_fn
         )
 
     def ingest_data(self):
@@ -36,29 +36,37 @@ class VectorDB:
             df = pd.read_csv(settings.SHEET_URL)
 
             # 3. تنظيف البيانات
-            df = df.dropna(how='all')
+            df = df.dropna(how="all")
             df = df.fillna("")
 
             documents, metadatas, ids = [], [], []
 
             # 4. تجهيز البيانات
             for index, row in df.iterrows():
-                problem = row.get('المشكلة') or row.get('العطل') or "غير محدد"
-                description = row.get('وصف العطل') or row.get('الوصف') or ""
-                solution = row.get('الحل المقترح') or row.get('الحل') or "يرجى الفحص الفني"
-                part = row.get('القطعة المرشحة') or row.get('قطعة الغيار المرشحة') or "غير محدد"
-                difficulty = row.get('مستوى الصعوبة') or "متوسط"
-                category = row.get('الفئة') or "عام"
+                problem = row.get("المشكلة") or row.get("العطل") or "غير محدد"
+                description = row.get("وصف العطل") or row.get("الوصف") or ""
+                solution = (
+                    row.get("الحل المقترح") or row.get("الحل") or "يرجى الفحص الفني"
+                )
+                part = (
+                    row.get("القطعة المرشحة")
+                    or row.get("قطعة الغيار المرشحة")
+                    or "غير محدد"
+                )
+                difficulty = row.get("مستوى الصعوبة") or "متوسط"
+                category = row.get("الفئة") or "عام"
 
                 content = f"المشكلة: {problem}\nالوصف: {description}\nالحل: {solution}"
                 documents.append(content)
 
-                metadatas.append({
-                    "القطعة المرشحة": str(part),
-                    "الحل المقترح": str(solution),
-                    "مستوى الصعوبة": str(difficulty).strip(),
-                    "الفئة": str(category)
-                })
+                metadatas.append(
+                    {
+                        "القطعة المرشحة": str(part),
+                        "الحل المقترح": str(solution),
+                        "مستوى الصعوبة": str(difficulty).strip(),
+                        "الفئة": str(category),
+                    }
+                )
 
                 ids.append(f"id_{index}")
 
@@ -67,9 +75,9 @@ class VectorDB:
 
             for i in range(0, len(documents), batch_size):
                 self.collection.add(
-                    documents=documents[i: i + batch_size],
-                    metadatas=metadatas[i: i + batch_size],
-                    ids=ids[i: i + batch_size]
+                    documents=documents[i : i + batch_size],
+                    metadatas=metadatas[i : i + batch_size],
+                    ids=ids[i : i + batch_size],
                 )
                 print(f"⏳ تم رفع الدفعة رقم {i // batch_size + 1} بنجاح...")
 
@@ -77,7 +85,6 @@ class VectorDB:
 
         except Exception as e:
             print(f"❌ خطأ أثناء ingest: {str(e)}")
-
 
     # def ingest_excel(self):
     #     """رفع البيانات على دفعات لتجنب خطأ الـ Batch Size"""
@@ -153,8 +160,5 @@ class VectorDB:
     #         print(f"❌ حدث خطأ أثناء سحب البيانات: {e}")
 
     def search(self, query: str, n_results: int = 3):
-        results = self.collection.query(
-            query_texts=[query],
-            n_results=n_results
-        )
+        results = self.collection.query(query_texts=[query], n_results=n_results)
         return results
