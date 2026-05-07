@@ -74,31 +74,29 @@ def safe_db_call(func):
 def get_mechanics_from_db(specialty: str, sub_specialty: str):
     """
     جلب أفضل 15 فني متاحين بناءً على التخصص والتقييم.
-    المنطق: Rank 1 للتخصص الدقيق، Rank 2 للتخصص العام، مع استبعاد أقل من 3 نجوم.
     """
-    # --- بداية التعديل الآمن (تنظيف المتغيرات فقط بدون المساس بأي حاجة برا) ---
+    # 1. تنظيف هندسي سليم: لو المتغير راجع None نحوله لنص فاضي
     safe_spec = specialty if specialty and str(specialty).lower() != "none" else ""
     safe_sub = (
         sub_specialty if sub_specialty and str(sub_specialty).lower() != "none" else ""
     )
 
-    # لو المتغيرين جايين فاضيين، هندور بكلمة فرامل كقيمة افتراضية عشان التيست ينجح
+    # لو مفيش أي تخصص مبعوت، رجع القائمة فاضية (تصرف منطقي سليم)
     if not safe_spec and not safe_sub:
-        safe_spec = "فرامل"
-    # --- نهاية التعديل الآمن ---
+        return []
 
     conn = pymssql.connect(
         server=settings.DB_SERVER,
         user=settings.DB_USER,
         password=settings.DB_PASSWORD,
         database=settings.DB_NAME,
-        charset="utf8",  # ضروري عشان العربي
+        charset="utf8",
     )
     cursor = conn.cursor(as_dict=True)
 
     query = f"""
         SELECT TOP 15 
-            u.Id AS MechanicId, 
+            u.Id AS UserId,  -- 🔴 السر كله هنا! رجعناها UserId عشان الـ main.py بتاعك يشوفها
             u.FirstName + ' ' + ISNULL(u.LastName, '') AS Name, 
             u.Phone, 
             mp.Location_Latitude AS Latitude, 
