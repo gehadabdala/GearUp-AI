@@ -8,9 +8,12 @@ import httpx
 
 class SafeGeminiEmbedding(EmbeddingFunction):
     def __call__(self, input: Documents) -> Embeddings:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/embedding-001:batchEmbedContents?key={settings.GEMINI_API_KEY}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:batchEmbedContents?key={settings.GEMINI_API_KEY}"
         reqs = [
-            {"model": "models/embedding-001", "content": {"parts": [{"text": str(t)}]}}
+            {
+                "model": "models/text-embedding-004",
+                "content": {"parts": [{"text": str(t)}]},
+            }
             for t in input
         ]
         try:
