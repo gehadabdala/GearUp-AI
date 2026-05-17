@@ -1,17 +1,20 @@
 FROM python:3.11-slim
 
-# تعريف مسار العمل
-WORKDIR /app
+# 1. فولدر السيرفر الأساسي
+WORKDIR /code
 
-# نسخ ملف المكاتب وتسطيبها
+# 2. تعريف المسار لبايثون
+ENV PYTHONPATH=/code
+
+# 3. تسطيب المكاتب
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# نسخ باقي ملفات المشروع
+# 4. نسخ كل ملفاتك (بما فيها فولدر app و chroma_db) لـ /code
 COPY . .
 
-# إعطاء صلاحيات للمجلد عشان ChromaDB يشتغل براحته
-RUN chmod -R 777 /app
+# 5. صلاحيات القراءة والكتابة
+RUN chmod -R 777 /code
 
-# تشغيل السيرفر على بورت 7860
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "7860"]
+# 6. أمر التشغيل الصحيح (بيدخل فولدر app ويشغل main)
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "7860"]
