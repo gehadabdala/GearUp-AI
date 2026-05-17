@@ -234,7 +234,7 @@ class AIService:
             return json.loads(clean_json)
 
         except Exception as e:
-            print(f"❌ [Local LLM Intent Error]: {local_e}")
+            print(f"❌ [Local LLM Intent Error]: {e}")
             # قيم احتياطية آمنة
             return {
                 "is_emergency": False,
