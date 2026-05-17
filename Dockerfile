@@ -1,21 +1,17 @@
-FROM python:3.12-slim
+FROM python:3.11-slim
 
+# تعريف مسار العمل
 WORKDIR /app
 
-# تثبيت dependencies للنظام (مهم لـ ChromaDB و pymssql)
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    python3-dev \
-    && rm -rf /var/lib/apt/lists/*
-
+# نسخ ملف المكاتب وتسطيبها
 COPY requirements.txt .
-
-RUN pip install --no-cache-dir --upgrade pip
 RUN pip install --no-cache-dir -r requirements.txt
 
+# نسخ باقي ملفات المشروع
 COPY . .
 
-# Cloud Run default port
-EXPOSE 8080
+# إعطاء صلاحيات للمجلد عشان ChromaDB يشتغل براحته
+RUN chmod -R 777 /app
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+# تشغيل السيرفر على بورت 7860
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "7860"]
