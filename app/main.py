@@ -697,48 +697,58 @@ import json
 @app.post("/approve-mechanic")
 async def approve_mechanic(
     mechanic_id: str = Form(...),
-    # doc_type: str = Form(..., description="نوع المستند: بطاقة، رخصة ورشة، إلخ"),
-    # file: UploadFile = File(...),
+    document_url: Optional[str] = Form(None),  # Priority 1
 ):
     """
-    التحقق الآلي من مستندات الفنيين باستخدام الذكاء الاصطناعي (Gemini Vision).
+    التحقق الآلي من مستندات الفنيين باستخدام الـ Fallback النظيف.
+    متوافق تماماً مع متغيراتك ومؤمن ضد نصوص Swagger الفارغة.
     """
     try:
+        # 1. تحديد الرابط (الأولوية لـ document_url إذا كان يحتوي على رابط حقيقي)
+        image_url = document_url
+        if image_url:
+            clean_url = image_url.strip().lower()
+            if clean_url == "" or clean_url == "none":
+                image_url = None
 
-        # 1. بننادي دالة الداتابيز عشان تجيب الـ FilePath
-        db_file_path = get_mechanic_document_path(mechanic_id)
+        # (Fallback -> الذهاب للداتا بيز لو مفيش URL مبعوت في الـ Form)
+        if not image_url:
+            image_url = get_mechanic_document_path(mechanic_id)
 
-        if not db_file_path:
+        if not image_url:
             raise HTTPException(
                 status_code=404,
-                detail="لم يتم العثور على مسار المستند في قاعدة البيانات.",
+                detail="لم يتم العثور على مسار المستند في قاعدة البيانات أو الطلب.",
             )
 
-        # 2. بنستخدم اللينك اللي رجع من الداتابيز (Cloudinary URL) عشان ننزل الصورة
+        # 2. تحميل الصورة باستخدام httpx
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
+
         async with httpx.AsyncClient() as client:
-            resp = await client.get(db_file_path)
+            resp = await client.get(image_url, headers=headers, follow_redirects=True)
             if resp.status_code != 200:
                 raise HTTPException(
                     status_code=400,
-                    detail="فشل تحميل الصورة من مسار Cloudinary المخزن.",
+                    detail=f"فشل تحميل الصورة من السيرفر. الـ Status Code: {resp.status_code}",
                 )
 
             contents = resp.content
             encoded = base64.b64encode(contents).decode("utf-8")
+            # بنأمن التنسيق بـ image/jpeg عشان يطابق شرط الـ startswith في الـ ai_service
             image_data_url = f"data:image/jpeg;base64,{encoded}"
 
-        # 3. إرسال الصورة للـ AI للتحليل
-        # لازم الـ Service تكون بترجع JSON فيه حالة القبول والسبب
+        # 3. إرسال الصورة للـ AI للتحليل بنفس المتغيرات الأصلية بتاعتك
         ai_result = await ai.verify_document(image_data=image_data_url)
 
-        # استخراج النتيجة من رد الذكاء الاصطناعي
         is_approved = ai_result.get("is_approved", False)
         ai_feedback = ai_result.get("feedback", "لم يتم تقديم تفاصيل.")
 
-        # 4. بنحدث جدول MechanicDocuments بالحالة الجديدة
+        # 4. تحديث جدول MechanicDocuments بالحالة الجديدة
         update_document_status(mechanic_id=mechanic_id, is_approved=is_approved)
 
-        # 5. إرجاع النتيجة للـ Frontend
+        # 5. إرجاع النتيجة للـ Frontend بنفس الـ Structure المستقر بتاعك
         return {
             "status": "success",
             "mechanic_id": mechanic_id,
@@ -749,6 +759,8 @@ async def approve_mechanic(
             ),
         }
 
+    except HTTPException as http_ex:
+        raise http_ex
     except Exception as e:
         print(f"❌ Document Verification Error: {e}")
         raise HTTPException(
