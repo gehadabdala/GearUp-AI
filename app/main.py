@@ -392,12 +392,12 @@ async def trigger_ingestion():
 # =====================================================================
 @app.post("/recommend", response_model=RecommendationResponse)
 async def get_recommendation(
-    query_data: str = Form(...),
-    user_id: Optional[str] = Form(None),
-    car_id: Optional[str] = Form(None),
-    file1: Optional[UploadFile] = File(None),  # الصورة الأولى (اختيارية)
-    file2: Optional[UploadFile] = File(None),  # الصورة التانية (اختيارية)
-    file3: Optional[UploadFile] = File(None),
+        query_data: str = Form(...),
+        user_id: Optional[str] = Form(None),
+        car_id: Optional[str] = Form(None),
+        file1: Optional[UploadFile] = File(None),  # الصورة الأولى (اختيارية)
+        file2: Optional[UploadFile] = File(None),  # الصورة التانية (اختيارية)
+        file3: Optional[UploadFile] = File(None),
 ):
     try:
         # 1. تجهيز البيانات والصورة
@@ -409,12 +409,10 @@ async def get_recommendation(
         files = [f for f in [file1, file2, file3] if f is not None]
         if files:
             for file in files:
-
                 contents = await file.read()
-
                 encoded = base64.b64encode(contents).decode("utf-8")
-
                 image_data_urls.append(f"data:{file.content_type};base64,{encoded}")
+
         # 2. جلب سياق المستخدم
         user_data = get_user_context_data(user_id, car_id)
         user_context = ""
@@ -452,10 +450,10 @@ async def get_recommendation(
             ]
         )
         is_advice_mode = (
-            is_advice and not is_emergency
-        ) and not user_asking_for_workshop
+                                 is_advice and not is_emergency
+                         ) and not user_asking_for_workshop
         if user_asking_for_workshop and not any(
-            word in description for word in ["رجة", "صوت", "مشكلة", "عطل"]
+                word in description for word in ["رجة", "صوت", "مشكلة", "عطل"]
         ):
             top_case = {}
             suggested_solution = "يرجى التوجه للفني للفحص"
@@ -476,17 +474,25 @@ async def get_recommendation(
                 "القطعة المرشحة", top_case.get("parts", "غير محدد")
             )
 
-        # 5. منطق التحية
+        # 5. منطق التحية والتعريف بالتطبيق
         if is_greeting and not is_emergency and not needs_mechanic:
-            instructions = "أنت GearUp AI، خبير سيارات ودود. رد بترحيب وذكر بتخصصك فقط."
+            instructions = (
+                "أنت مساعد GearUp الذكي. رحب بالمستخدم، واشرح دورك باختصار شديد جداً "
+                "(تقديم نصائح، مساعدة في الأعطال، حجز فنيين). اكتب كرسالة دردشة عادية وبسيطة."
+            )
             ai_chat_answer = await ai.generate_response(
                 messages, [user_context, instructions], image_data_urls
             )
+
+            # تنظيف النجوم عشان الـ Swagger والـ UI
+            clean_answer = ai_chat_answer.replace("**", "").replace("*", "").replace("#", "")
+
             return RecommendationResponse(
                 query=description,
-                ai_answer=ai_chat_answer,
+                ai_answer=clean_answer,
                 source_documents=[],
                 requires_feedback=False,
+                requires_mechanic=False  # دي بس اللي زادت عشان تخفي الزرار
             )
 
         # 6. جلب ترشيحات قطع الغيار الذكية (باستخدام الـ AI)
@@ -504,17 +510,8 @@ async def get_recommendation(
                 parts_data = await ai.get_personalized_recommendations(
                     car_info, description
                 )
-
-                # تخزين القطع
                 spare_parts_recommendations = parts_data.get("suggested_parts", [])
-                # if not spare_parts_recommendations:
-                #     # لو الموديل سماها اسم تاني زي spare_parts أو parts
-                #     spare_parts_recommendations = parts_data.get(
-                #         "spare_parts", parts_data.get("parts", [])
-                #     )
 
-                # تخزين اللينكات
-                # تخزين اللينكات (صح وشغال بدون تكرار)
                 raw_links = parts_data.get("search_links", [])
                 if isinstance(raw_links, list):
                     for item in raw_links:
@@ -531,11 +528,11 @@ async def get_recommendation(
         mechanic_ids_list = []
 
         is_hard_issue = (
-            difficulty == "صعب"
-            or needs_mechanic
-            or is_emergency
-            or user_asking_for_workshop
-        ) and not is_advice_mode
+                                difficulty == "صعب"
+                                or needs_mechanic
+                                or is_emergency
+                                or user_asking_for_workshop
+                        ) and not is_advice_mode
 
         if is_hard_issue:
             specialty_json = await ai.extract_specialty(description, suggested_part)
@@ -546,9 +543,7 @@ async def get_recommendation(
             if mechanics_list:
                 seen_ids = set()
                 for m in mechanics_list:
-                    # 🔴 التعديل هنا: بنقرأ الـ UserId
                     m_id = m.get("UserId") or m.get("userid")
-
                     if m_id and str(m_id).lower() != "none":
                         if m_id not in seen_ids:
                             mechanic_ids_list.append(str(m_id))
@@ -563,7 +558,6 @@ async def get_recommendation(
             "gps": False,
         }
 
-        # تلميح للـ AI عشان ينطق بقطع الغيار
         parts_hint = ""
         if spare_parts_recommendations:
             parts_hint = f"\nقم باقتراح قطع الغيار التالية للمستخدم بأسلوب جذاب: {', '.join(spare_parts_recommendations)}."
@@ -587,27 +581,20 @@ async def get_recommendation(
             )
 
         elif is_hard_issue:
-            # 🟡 مسار الحجز العادي (Standard Booking) - متوافق مع شاشة الـ UI
-
-            # بنجيب التخصص الدقيق عشان نملى بيه حقل "نوع الخدمة"
             service_to_fill = "فحص شامل"
             if "specialty_json" in locals() and specialty_json:
-                # 1. بنحاول ناخد التخصص الفرعي الأول (عشان يكون دقيق جداً)
                 service_to_fill = specialty_json.get("sub_specialty")
-
-                # 2. لو مفيش تخصص فرعي أو راجع بكلمة "غير محدد"، بناخد التخصص الأساسي
                 if not service_to_fill or service_to_fill == "غير محدد":
                     service_to_fill = specialty_json.get("specialty", "فحص شامل")
 
             auto_fill_data = {
-                "service_type": "حجز موعد",  # الكلمة اللي الفرونت هيعرف منها يفتح شاشة الـ Booking
-                "required_service": service_to_fill,  # هنا هيتملى بالتخصص الفرعي أو الأساسي
+                "service_type": "حجز موعد",
+                "required_service": service_to_fill,
                 "location": "في الورشة",
                 "gps": False,
             }
 
             if is_direct_booking_request:
-                # 1. الرد الجديد (مباشر ومختصر لطلب الحجز)
                 instructions = (
                     f"أنت مساعد GearUp الودود. {user_context}. "
                     f"المستخدم يريد حجز موعد مع ميكانيكي متخصص في {service_to_fill}. "
@@ -616,18 +603,12 @@ async def get_recommendation(
                     f"ممنوع تقديم أي تشخيصات تقنية أو احتمالات أعطال لأن المستخدم لم يطلب فحصاً بل طلب حجزاً."
                 )
             else:
-                vision_instruction = (
-                    "\n- إذا كانت الصور المرفقة غير واضحة لتحديد العطل بدقة، اطلب من المستخدم بلطف تصوير العطل "
-                    "من زاوية أقرب أو في إضاءة أفضل، مع تقديم تشخيص مبدئي بناءً على ما هو متاح."
-                )
-                # 2- (التشخيص المفصل للأعطال الصعبة)
                 instructions = (
                     f"أنت خبير سيارات. {user_context}. العطل يحتاج لتدخل فني ولكنه ليس حالة طوارئ خطيرة. "
                     f"الحل المقترح: {suggested_solution}. {parts_hint} "
                     f"اشرح المشكلة ببساطة، ووجه المستخدم بوضوح للضغط على زر 'إضافة حجز جديد' "
                     f"لاختيار موعد وتاريخ مناسبين لزيارة الورشة. ممنوع إثارة الذعر."
                 )
-
         else:
             instructions = f"{user_context} المشكلة بسيطة ويمكن حلها. الحل المقترح: {suggested_solution}. {parts_hint} التنسيق: خطوات الحل."
 
@@ -635,11 +616,14 @@ async def get_recommendation(
             messages, [instructions], image_data_urls
         )
 
+        # 🧹 تنظيف الماركداون من الإجابة النهائية للأعطال برضه عشان الـ Swagger
+        clean_final_answer = ai_final_answer.replace("**", "").replace("*", "").replace("#", "")
+
         # 9. استخراج التذكير وتجهيزه للفرونت إند
         reminder_fields = [None] * 6
         if offers_reminder_flag:
             try:
-                r_data = await ai.extract_reminder_details(ai_final_answer)
+                r_data = await ai.extract_reminder_details(clean_final_answer)
                 reminder_fields = [
                     r_data.get("title"),
                     r_data.get("description"),
@@ -651,14 +635,14 @@ async def get_recommendation(
             except Exception as re:
                 print(f"⚠️ Error in extracting reminder details: {re}")
 
-        # 10. إرجاع النتيجة
+        # 10. إرجاع النتيجة الكاملة في مسار الأعطال
         return RecommendationResponse(
             query=description,
-            ai_answer=ai_final_answer,
+            ai_answer=clean_final_answer,
             source_documents=[top_case] if not is_hard_issue else [],
             requires_feedback=is_advice_mode
-            or offers_reminder_flag
-            or (not is_hard_issue),
+                              or offers_reminder_flag
+                              or (not is_hard_issue),
             requires_mechanic=is_hard_issue,
             is_emergency=is_emergency,
             is_advice_mode=is_advice_mode,
