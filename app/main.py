@@ -434,6 +434,17 @@ async def get_recommendation(
         is_greeting = str(intent_data.get("is_greeting", False)).lower() == "true"
         needs_mechanic = str(intent_data.get("needs_mechanic", False)).lower() == "true"
 
+        dangerous_keywords = [
+            "خبط في الموتور",
+            "خبط فالموتور",
+            "رزع في الموتور",
+            "الموتور بيخبط",
+            "خبط",
+        ]
+        if any(kw in description for kw in dangerous_keywords):
+            is_emergency = True
+            needs_mechanic = True
+
         print(
             f"🧠 AI Intent Analysis: Emergency={is_emergency}, Advice={is_advice}, Mechanic={needs_mechanic}"
         )
