@@ -424,16 +424,9 @@ async def get_recommendation(
             car_brand = user_data.get("Brand", "")
             car_info = car_brand if car_brand else "سيارة"
             user_context = f"[معلومة سرية: اسم المستخدم {f_name}، سيارته {car_brand}. استخدم صيغة المذكر/المؤنث الصح.]"
-
-        # 3. تحليل النية بالذكاء الاصطناعي (مع حماية صارمة للأنواع المنطقية)
-        intent_data = await ai.analyze_intent(description)
-
-        # تحويل أي ناتج (سواء String أو Bool) لقيمة منطقية حقيقية
-        is_emergency = str(intent_data.get("is_emergency", False)).lower() == "true"
-        is_advice = str(intent_data.get("is_advice", False)).lower() == "true"
-        is_greeting = str(intent_data.get("is_greeting", False)).lower() == "true"
-        needs_mechanic = str(intent_data.get("needs_mechanic", False)).lower() == "true"
-
+        # =====================================================================
+        # [ 3. تحليل النية بالذكاء الاصطناعي (مع حماية صارمة للأنواع المنطقية) ]
+        # =====================================================================
         dangerous_keywords = [
             "خبط في الموتور",
             "خبط فالموتور",
@@ -441,14 +434,26 @@ async def get_recommendation(
             "الموتور بيخبط",
             "خبط",
         ]
+
+        # 🚨 الحماية الصارمة: لو لقطنا كلمات رعب، بنقفل الدائرة فوراً بالبايثون ومن غير ما نسأل الـ AI أصلاً
         if any(kw in description for kw in dangerous_keywords):
             is_emergency = True
             needs_mechanic = True
+            is_advice = False
+            is_greeting = False
+        else:
+            # لو الرسالة عادية ومش خطر، بنسيب الـ AI يحلل النية طبيعي بـ نداء واحد فقط!
+            intent_data = await ai.analyze_intent(description)
+            is_emergency = str(intent_data.get("is_emergency", False)).lower() == "true"
+            is_advice = str(intent_data.get("is_advice", False)).lower() == "true"
+            is_greeting = str(intent_data.get("is_greeting", False)).lower() == "true"
+            needs_mechanic = (
+                str(intent_data.get("needs_mechanic", False)).lower() == "true"
+            )
 
         print(
             f"🧠 AI Intent Analysis: Emergency={is_emergency}, Advice={is_advice}, Mechanic={needs_mechanic}"
         )
-
         # 4. البحث في RAG
         user_asking_for_workshop = any(
             word in description.lower()
@@ -599,11 +604,7 @@ async def get_recommendation(
         if spare_parts_recommendations:
             parts_hint = f"\nقم باقتراح قطع الغيار التالية للمستخدم بأسلوب جذاب: {', '.join(spare_parts_recommendations)}."
 
-        if is_advice_mode:
-            instructions = f"{user_context} قدم نصائح صيانة دورية وودية واعرض إنشاء تذكير. {parts_hint} لا تذكر أي فنيين."
-            offers_reminder_flag = True
-
-        elif is_emergency:
+        if is_emergency:
             auto_fill_data = {
                 "service_type": "خدمة طارئة",
                 "required_service": "إنقاذ وقطر",
@@ -616,6 +617,10 @@ async def get_recommendation(
                 f"⚠️ تحذير صارم: ممنوع منعاً باتاً أن تطلب من المستخدم القيام بأي خطوات فحص. "
                 f"بعد إجراءات الأمان، وجهه مباشرة للضغط على زر 'حجز خدمة طارئة'. لا تذكر أسماء فنيين."
             )
+
+        elif is_advice_mode:
+            instructions = f"{user_context} قدم نصائح صيانة دورية وودية واعرض إنشاء تذكير. {parts_hint} لا تذكر أي فنيين."
+            offers_reminder_flag = True
 
         elif is_hard_issue:
             # 🟡 مسار الحجز العادي (Standard Booking) - متوافق مع شاشة الـ UI
@@ -1064,29 +1069,3 @@ async def get_mechanic_details(mechanic_id: str):
         raise HTTPException(status_code=404, detail="الفني غير موجود.")
 
     return {"status": "success", "data": mechanic}
-
-
-# # =====================================================================
-# # [ 9. حفظ التذكيرات - Save Reminders ]
-# # =====================================================================
-# @app.post("/reminders/save")
-# async def save_maintenance_reminder(request: SaveReminderRequest):
-#     """
-#     حفظ التذكير الذي اقترحه الـ AI في قاعدة البيانات (SQL Server)
-#     """
-#     result = add_reminder_to_db(
-#         request.user_id,
-#         request.car_id,
-#         request.title,
-#         request.description,
-#         request.suggested_date,
-#         request.frequency,
-#         request.notification_time,
-#     )
-#
-#     if result:
-#         return {"status": "success", "message": "تم حفظ التذكير بنجاح يا جيهاد! 🛠️"}
-#     else:
-#         raise HTTPException(
-#             status_code=500, detail="عذراً، فشل الاتصال بقاعدة البيانات لحفظ التذكير."
-#         )
