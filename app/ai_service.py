@@ -206,19 +206,21 @@ class AIService:
             print(f"❌ [Reminder Extraction Error]: {e}")
             # fallback ديناميكي برضه في حالة الفشل الكارثي
             return {
-                {
-                    "title": "تذكير صيانة السيارة",
-                    "description": "موعد الصيانة الدورية المقترح",
-                    "frequency": "دوري",
-                    "suggested_date": (current_now + timedelta(days=7)).strftime(
-                        "%Y-%m-%d"
-                    ),
-                    "notification_time": current_time_str,
-                }
+                "title": "تذكير صيانة السيارة",
+                "description": "موعد الصيانة الدورية المقترح",
+                "frequency": "دوري",
+                "suggested_date": (current_now + timedelta(days=7)).strftime(
+                    "%Y-%m-%d"
+                ),
+                "notification_time": current_time_str,
             }
 
+    # =====================================================================
+    # [ 6. تحليل النوايا الذكي (Smart Intent Analysis) ]
+    # =====================================================================
     async def analyze_intent(self, user_message: str) -> dict:
         system_prompt = "You are a specialized automotive intent classifier. Output ONLY raw JSON. No markdown."
+
         user_prompt = f"""
         قم بتحليل رسالة المستخدم التالية المتعلقة بالسيارات لتحديد مسار الواجهة الأمامية (Frontend) بدقة قاطعة.
         رسالة المستخدم: "{user_message}"
@@ -226,9 +228,9 @@ class AIService:
         قم بإرجاع JSON فقط يحتوي على الحقول المنطقية (true أو false) التالية:
         {{
             "is_emergency": "true فقط في حالات الخطر الداهم أو الأعطال الكارثية التي تتطلب توقف فوري لحماية حياة السائق أو المحرك (أمثلة حصرية: سخونة المحرك القصوى، عطل الفرامل، خروج دخان، تسريب وقود، أو سماع خبط شديد ورزع ميكانيكي حاد داخل الموتور). في أي عطل آخر، اجعلها false.",
-            "needs_mechanic": "true في أي حالة تتطلب فحص بورشة أو تدخل فني (هذا يشمل جميع حالات الطوارئ السابقة، ويشمل أيضاً الأعطال غير الخطيرة مثل: تكييف لا يعمل، فتيس يعلق، صوت في العفشة). إذا كانت مجرد استشارة، اجعلها false.",
+            "needs_mechanic": "true في أي حالة تتطلب فحص بورشة أو تدخل فني (هذا يشمل جميع حالات الطوارئ السابقة، ويشمل أيضاً الأعطال غير الخطيرة مثل: تكييف لا يعمل، فتيس يعلق، صوت في العفشة). إذا كانت مجرد استشارة أو تحية أو سؤال عام عن المنصة، اجعلها false.",
             "is_advice": "true فقط إذا كان المستخدم يطلب نصيحة، مواعيد صيانة، أو يسأل عن أسعار/أنواع (مثل: متى أغير الزيت، أفضل نوع كاوتش). وإلا false.",
-            "is_greeting": "true فقط إذا كانت الرسالة مجرد تحية أو تعارف (مثل: السلام عليكم، من أنت). وإلا false."
+            "is_greeting": "true إذا كانت الرسالة مجرد تحية أو تعارف أو سؤال عام من المستخدم يستفسر فيه عن موقع/منصة GearUp وماذا تقدم (أمثلة: السلام عليكم، من أنت، موقع gearup بيعمل إيه، عرفني على التطبيق). وإلا false."
         }}
         """
 
@@ -252,7 +254,6 @@ class AIService:
 
         except Exception as e:
             print(f"❌ [Local LLM Intent Error]: {e}")
-            # قيم احتياطية آمنة
             return {
                 "is_emergency": False,
                 "is_advice": False,
@@ -261,7 +262,7 @@ class AIService:
             }
 
     # =====================================================================
-    # [ 6. محرك ترشيح قطع الغيار والروابط (Parts & Links Recommendation) ]
+    # [ 7. محرك ترشيح قطع الغيار والروابط (Parts & Links Recommendation) ]
     # =====================================================================
     async def get_personalized_recommendations(
         self, car_info: str, description: str
