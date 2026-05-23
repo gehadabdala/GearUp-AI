@@ -478,7 +478,12 @@ async def get_recommendation(
 
         # 5. منطق التحية
         if is_greeting and not is_emergency and not needs_mechanic:
-            instructions = "أنت GearUp AI، خبير سيارات ودود. رد بترحيب وذكر بتخصصك فقط."
+            instructions = (
+                f"أنت GearUp AI، مساعد ذكي وخبير سيارات ودود. {user_context}. "
+                "المستخدم يلقي التحية أو يسأل عن الموقع/المنصة. "
+                "رد بترحيب حار وودود جداً، وعرّفه بمنصة GearUp وخدماتها بشكل عام وجذاب (مثل: حجز صيانة، فحص أعطال بالذكاء الاصطناعي، تذكيرات صيانة). "
+                "⚠️ تحذير: ممنوع تماماً اقتراح قطع غيار، وممنوع توجيهه لحجز موعد طوارئ أو صيانة ميكانيكية حالياً، فقط تعارف وترحيب."
+            )
             ai_chat_answer = await ai.generate_response(
                 messages, [user_context, instructions], image_data_urls
             )
@@ -487,6 +492,21 @@ async def get_recommendation(
                 ai_answer=ai_chat_answer,
                 source_documents=[],
                 requires_feedback=False,
+                requires_mechanic=False,
+                is_emergency=False,
+                is_advice_mode=False,
+                offers_reminder=False,
+                recommended_mechanics=[],
+                car_id=car_id,
+                issue_summary=description,
+                service_type=None,
+                required_service=None,
+                service_location_type=None,
+                use_current_location=False,
+                has_attachment=True if files and len(files) > 0 else False,
+                recommended_spare_parts=[],
+                external_links=[],
+                car_brand=car_info if car_info != "سيارة" else None,
             )
 
         # 6. جلب ترشيحات قطع الغيار الذكية (باستخدام الـ AI)
@@ -634,19 +654,25 @@ async def get_recommendation(
         ai_final_answer = await ai.generate_response(
             messages, [instructions], image_data_urls
         )
-
-        # 9. استخراج التذكير وتجهيزه للفرونت إند
+        # 9. استخراج التذكير وتجهيزه للفرونت إند (حسابات ديناميكية للتاريخ والوقت)
         reminder_fields = [None] * 6
         if offers_reminder_flag:
             try:
                 r_data = await ai.extract_reminder_details(ai_final_answer)
+
+                # حساب تاريخ احتياطي ديناميكي (كمان أسبوع من النهاردة) لو الموديل مطلعش داتا
+                default_future_date = (datetime.now() + timedelta(days=7)).strftime(
+                    "%Y-%m-%d"
+                )
+                default_time = datetime.now().strftime("%H:%M")
+
                 reminder_fields = [
-                    r_data.get("title"),
-                    r_data.get("description"),
-                    r_data.get("frequency"),
-                    r_data.get("suggested_date"),
-                    None,
-                    r_data.get("notification_time"),
+                    r_data.get("title", "تذكير صيانة دورية"),
+                    r_data.get("description", "موعد الفحص والصيانة الدورية للسيارة"),
+                    r_data.get("frequency", "دوري"),
+                    r_data.get("suggested_date", default_future_date),
+                    None,  # suggested_end_date
+                    r_data.get("notification_time", default_time),
                 ]
             except Exception as re:
                 print(f"⚠️ Error in extracting reminder details: {re}")
