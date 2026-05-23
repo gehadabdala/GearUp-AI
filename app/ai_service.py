@@ -219,18 +219,24 @@ class AIService:
     # [ 6. تحليل النوايا الذكي (Smart Intent Analysis) ]
     # =====================================================================
     async def analyze_intent(self, user_message: str) -> dict:
-        system_prompt = "You are a specialized automotive intent classifier. Output ONLY raw JSON. No markdown."
+        system_prompt = "You are a strict specialized automotive intent classifier API. Output ONLY raw JSON. No markdown."
 
         user_prompt = f"""
-        قم بتحليل رسالة المستخدم التالية المتعلقة بالسيارات لتحديد مسار الواجهة الأمامية (Frontend) بدقة قاطعة.
+        قم بتحليل رسالة المستخدم التالية المتعلقة بالسيارات لتحديد الحقول المنطقية (true أو false) بدقة قاطعة وبدون أي تفكير مرن.
         رسالة المستخدم: "{user_message}"
 
-        قم بإرجاع JSON فقط يحتوي على الحقول المنطقية (true أو false) التالية:
+        ⚠️ قواعد التصنيف الصارمة (Strict Rules):
+        1. "is_emergency": اجعلها true فوراً وبدون أي تردد إذا كانت الرسالة تحتوي على أي شكوى من أصوات خطيرة في المحرك أو أعطال كارثية (أمثلة قاطعة: خبط في الموتور، رزع في الموتور، المحرك بيخبط، سخونة المحرك، دخان من الكبوت، عطل الفرامل، تسريب بنزين). أي شكوى فيها كلمة 'خبط' أو 'صوت في الموتور' هي حالة طارئة قاتلة للمحرك (true). وإلا false.
+        2. "needs_mechanic": اجعلها true في أي حالة تتطلب فحص بورشة أو تدخل فني (هذا يشمل جميع حالات الطوارئ السابقة، ويشمل أيضاً الأعطال غير الخطيرة مثل: تكييف لا يعمل، فتيس يعلق، صوت في العفشة، تغيير مساعدين). إذا كانت مجرد استشارة عامة أو تحية، اجعلها false.
+        3. "is_advice": اجعلها true فقط إذا كان المستخدم يطلب نصيحة عامة، مواعيد صيانة دورية، أو يسأل عن أسعار/أنواع (مثل: متى أغير الزيت، أفضل نوع كاوتش). وإلا false.
+        4. "is_greeting": اجعلها true إذا كانت الرسالة مجرد تحية (السلام عليكم) أو سؤال عام يستفسر عن منصة GearUp وماذا تقدم. وإلا false.
+
+        قم بإرجاع JSON فقط بالهيكل التالي:
         {{
-            "is_emergency": "true فقط في حالات الخطر الداهم أو الأعطال الكارثية التي تتطلب توقف فوري لحماية حياة السائق أو المحرك (أمثلة حصرية: سخونة المحرك القصوى، عطل الفرامل، خروج دخان، تسريب وقود، أو سماع خبط شديد ورزع ميكانيكي حاد داخل الموتور). في أي عطل آخر، اجعلها false.",
-            "needs_mechanic": "true في أي حالة تتطلب فحص بورشة أو تدخل فني (هذا يشمل جميع حالات الطوارئ السابقة، ويشمل أيضاً الأعطال غير الخطيرة مثل: تكييف لا يعمل، فتيس يعلق، صوت في العفشة). إذا كانت مجرد استشارة أو تحية أو سؤال عام عن المنصة، اجعلها false.",
-            "is_advice": "true فقط إذا كان المستخدم يطلب نصيحة، مواعيد صيانة، أو يسأل عن أسعار/أنواع (مثل: متى أغير الزيت، أفضل نوع كاوتش). وإلا false.",
-            "is_greeting": "true إذا كانت الرسالة مجرد تحية أو تعارف أو سؤال عام من المستخدم يستفسر فيه عن موقع/منصة GearUp وماذا تقدم (أمثلة: السلام عليكم، من أنت، موقع gearup بيعمل إيه، عرفني على التطبيق). وإلا false."
+            "is_emergency": false,
+            "needs_mechanic": false,
+            "is_advice": false,
+            "is_greeting": false
         }}
         """
 
@@ -241,7 +247,7 @@ class AIService:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                temperature=0.0,
+                temperature=0.0,  # صفر تماماً عشان نمنع الموديل من الإبداع والتأليف
                 max_tokens=200,
             )
             clean_json = (
@@ -254,11 +260,16 @@ class AIService:
 
         except Exception as e:
             print(f"❌ [Local LLM Intent Error]: {e}")
+            # حماية يدوية (Fallback) صايعة لو الـ API هنج عشان السيرفر ميعكش:
+            is_dangerous = any(
+                kw in user_message
+                for kw in ["خبط", "رزع", "سخون", "حرارة", "دخان", "فرامل"]
+            )
             return {
-                "is_emergency": False,
+                "is_emergency": True if is_dangerous else False,
+                "needs_mechanic": True if is_dangerous else False,
                 "is_advice": False,
                 "is_greeting": False,
-                "needs_mechanic": False,
             }
 
     # =====================================================================
