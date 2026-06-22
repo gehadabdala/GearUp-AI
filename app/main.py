@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import pymssql
 import functools
 
+from scipy import special
 from sympy import re
 from app.config import settings
 from app.approval_service import ApprovalService
@@ -543,14 +544,7 @@ async def get_recommendation(
 
                 # تخزين القطع
                 spare_parts_recommendations = parts_data.get("suggested_parts", [])
-                # if not spare_parts_recommendations:
-                #     # لو الموديل سماها اسم تاني زي spare_parts أو parts
-                #     spare_parts_recommendations = parts_data.get(
-                #         "spare_parts", parts_data.get("parts", [])
-                #     )
 
-                # تخزين اللينكات
-                # تخزين اللينكات (صح وشغال بدون تكرار)
                 raw_links = parts_data.get("search_links", [])
                 if isinstance(raw_links, list):
                     for item in raw_links:
@@ -599,7 +593,6 @@ async def get_recommendation(
             "gps": False,
         }
 
-        # تلميح للـ AI عشان ينطق بقطع الغيار
         parts_hint = ""
         if spare_parts_recommendations:
             parts_hint = f"\nقم باقتراح قطع الغيار التالية للمستخدم بأسلوب جذاب: {', '.join(spare_parts_recommendations)}."
@@ -636,8 +629,8 @@ async def get_recommendation(
                     service_to_fill = specialty_json.get("specialty", "فحص شامل")
 
             auto_fill_data = {
-                "service_type": "حجز موعد",  # الكلمة اللي الفرونت هيعرف منها يفتح شاشة الـ Booking
-                "required_service": service_to_fill,  # هنا هيتملى بالتخصص الفرعي أو الأساسي
+                "service_type": "حجز موعد",
+                "required_service": service_to_fill,
                 "location": "في الورشة",
                 "gps": False,
             }
@@ -959,7 +952,14 @@ async def search_mechanics_endpoint(
                     search_keyword = found_issue
                     print(f"✅ Manual Override: Found '{found_issue}' in query.")
                 else:
-                    specialty_json = await ai.extract_specialty(clean_q, "")
+                    # بدال ما ينادي الـ API ويوقع الكود، هنخليه يرجع داتا افتراضية أو يسكب
+                    try:
+                        specialty_json = await ai.extract_specialty(clean_q, "")
+                    except:
+                        specialty_json = {
+                            "specialty": "ميكانيكا",
+                            "sub_specialty": "ميكانيكا",
+                        }  # داتا احتياطية
                     # حل إيرور الـ NoneType اللي صلحناه من شوية
                     extracted_sub = (specialty_json.get("sub_specialty") or "").strip()
                     extracted_spec = (specialty_json.get("specialty") or "").strip()
@@ -1056,7 +1056,7 @@ async def get_mechanic_details(mechanic_id: str):
             WHERE u.Id = '{mechanic_id}'
             GROUP BY u.Id, u.FirstName, u.LastName, u.Phone, u.Email, mp.Location_Latitude, mp.Location_Longitude, s.Name
         """
-        cursor.execute(sql)
+        cursor.execute(sql, (mechanic_id,))
         mechanic = cursor.fetchone()
         conn.close()
 

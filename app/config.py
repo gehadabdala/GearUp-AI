@@ -9,7 +9,7 @@ load_dotenv()
 class Settings:
     OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-
+    NaraRouter_key = os.getenv("NaraRouter_key")
     DB_SERVER = os.getenv("DB_SERVER")
     DB_NAME = os.getenv("DB_NAME")
     DB_USER = os.getenv("DB_USER")
@@ -28,5 +28,6 @@ class Settings:
 
     USE_LOCAL_AI = os.getenv("USE_LOCAL_AI") == "True"
     LOCAL_THINKER_MODEL = os.getenv("LOCAL_THINKER_MODEL", "llama3")
+
 
 settings = Settings()
