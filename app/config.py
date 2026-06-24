@@ -8,7 +8,7 @@ load_dotenv()
 
 class Settings:
     OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+    # GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
     NaraRouter_key = os.getenv("NaraRouter_key")
     DB_SERVER = os.getenv("DB_SERVER")
     DB_NAME = os.getenv("DB_NAME")

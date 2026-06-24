@@ -7,3 +7,5 @@ chromadb
 openai
 httpx
 sympy
+sentence-transformers
+torch
