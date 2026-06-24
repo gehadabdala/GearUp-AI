@@ -1,5 +1,6 @@
 import json
 import base64
+import os
 from openai import AsyncOpenAI
 from app.models import Message
 from app.config import settings
@@ -12,15 +13,26 @@ import urllib.parse
 class AIService:
     """
     خدمة الذكاء الاصطناعي المسؤولة عن التواصل مع نماذج اللغة
-    عبر OpenRouter لتحليل الأعطال واستخراج البيانات.
+    عبر OpenRouter و NVIDIA NIM لتحليل الأعطال واستخراج البيانات.
     """
 
     DEFAULT_MODEL = "google/gemini-2.0-flash-001"
+    # DEFAULT_MODEL = "openai/gpt-4o-mini"
+    NVIDIA_MODEL = "meta/llama-3.1-70b-instruct"
 
     def __init__(self):
+
+        openrouter_key = os.environ.get("OPENROUTER_API_KEY")
+        # هنوجه الطلب لسيرفرات OpenRouter غصب عن السيستم
         self.client = AsyncOpenAI(
             base_url="https://openrouter.ai/api/v1",
-            api_key=settings.OPENROUTER_API_KEY,
+            api_key=openrouter_key,
+        )
+
+        nvidia_key = os.environ.get("NVIDIA_API_KEY")
+        self.nv_client = AsyncOpenAI(
+            base_url="https://integrate.api.nvidia.com/v1",
+            api_key=nvidia_key,
         )
 
     # =====================================================================
@@ -56,20 +68,16 @@ class AIService:
             formatted_messages.append({"role": msg.role, "content": msg.content})
 
         if image_data_urls and len(image_data_urls) > 0:
-            for i in range(len(formatted_messages) - 1, -1, -1):
-                if formatted_messages[i]["role"] == "user":
-                    last_content = formatted_messages[i]["content"]
-                    content_list = [{"type": "text", "text": last_content}]
-                    for img_url in image_data_urls:
-                        content_list.append(
-                            {"type": "image_url", "image_url": {"url": img_url}}
-                        )
-
-                    formatted_messages[i]["content"] = content_list
-                    break
+            # نيفيديا Llama 3.1 لا يقرأ صور، لذا نوجه الطلب لـ OpenRouter إذا وجدت صورة
+            current_client = self.client
+            current_model = self.DEFAULT_MODEL
+        else:
+            # للمحادثات النصية العادية، نستخدم نيفيديا العملاق
+            current_client = self.nv_client
+            current_model = self.NVIDIA_MODEL
         try:
-            response = await self.client.chat.completions.create(
-                model=self.DEFAULT_MODEL,
+            response = await current_client.chat.completions.create(
+                model=current_model,
                 messages=formatted_messages,
                 temperature=0.5,
                 max_tokens=512,
@@ -77,33 +85,21 @@ class AIService:
             return response.choices[0].message.content
         except Exception as e:
             print(f"❌ [AI Generate Error]: {e}")
-            return "عذراً، واجهت مشكلة تقنية في الخادم. يرجى المحاولة مرة أخرى لاحقاً."
 
-        # # =====================================================================
-        # # [ 3. محرك قراءة المستندات (Vision & OCR) ]
-        # # =====================================================================
-
-        # """
-        # قراءة النصوص من الصور (مثل الرخص والبطاقات) باستخدام الذكاء الاصطناعي.
-        # """
-        # try:
-        #     response = await self.client.chat.completions.create(
-        #         model=self.DEFAULT_MODEL,
-        #         messages=[
-        #             {
-        #                 "role": "user",
-        #                 "content": [
-        #                     {"type": "text", "text": prompt},
-        #                     {"type": "image_url", "image_url": {"url": image_data_url}},
-        #                 ],
-        #             }
-        #         ],
-        #         temperature=0.1,  # نستخدم Temperature 0.1 لضمان الدقة العالية وعدم التأليف (Hallucination) في قراءة الأرقام
-        #     )
-        #     return response.choices[0].message.content
-        # except Exception as e:
-        #     print(f"[OCR Error]: {e}")
-        #     return f"خطأ في قراءة الصورة: {str(e)}"
+            try:
+                print("🔄 [Fallback System]: Trying OpenRouter...")
+                response = await self.client.chat.completions.create(
+                    model=self.DEFAULT_MODEL,
+                    messages=formatted_messages,
+                    temperature=0.5,
+                    max_tokens=512,
+                )
+                return response.choices[0].message.content
+            except Exception as e2:
+                print(f"❌ [Fallback AI Error]: {e2}")
+                return (
+                    "عذراً، واجهت مشكلة تقنية في الخادم. يرجى المحاولة مرة أخرى لاحقاً."
+                )
 
     # =====================================================================
     # [ 4. محرك استخراج البيانات المهيكلة (Structured Data Extraction) ]
