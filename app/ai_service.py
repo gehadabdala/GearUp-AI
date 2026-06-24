@@ -2,6 +2,7 @@ import json
 import base64
 import os
 from openai import AsyncOpenAI
+import openai
 from app.models import Message
 from app.config import settings
 from datetime import datetime, timedelta
@@ -16,8 +17,8 @@ class AIService:
     عبر OpenRouter و NVIDIA NIM لتحليل الأعطال واستخراج البيانات.
     """
 
-    DEFAULT_MODEL = "google/gemini-2.0-flash-001"
-    # DEFAULT_MODEL = "openai/gpt-4o-mini"
+    # DEFAULT_MODEL = "google/gemini-2.0-flash-001"
+    DEFAULT_MODEL = "openai/gpt-4o-mini"
     NVIDIA_MODEL = "meta/llama-3.1-70b-instruct"
 
     def __init__(self):
