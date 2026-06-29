@@ -2,13 +2,9 @@ import json
 import base64
 import os
 from openai import AsyncOpenAI
-import openai
 from app.models import Message
 from app.config import settings
 from datetime import datetime, timedelta
-
-# from app.local_llm import simple_llm_service
-import urllib.parse
 
 
 class AIService:
@@ -17,23 +13,15 @@ class AIService:
     عبر OpenRouter و NVIDIA NIM لتحليل الأعطال واستخراج البيانات.
     """
 
-    # DEFAULT_MODEL = "google/gemini-2.0-flash-001"
-    DEFAULT_MODEL = "openai/gpt-4o-mini"
-    NVIDIA_MODEL = "meta/llama-3.1-70b-instruct"
+    DEFAULT_MODEL = "google/gemini-2.5-flash"
 
     def __init__(self):
-
+        # 2. بنعرف الموديل
         openrouter_key = os.environ.get("OPENROUTER_API_KEY")
-        # هنوجه الطلب لسيرفرات OpenRouter غصب عن السيستم
+
         self.client = AsyncOpenAI(
             base_url="https://openrouter.ai/api/v1",
             api_key=openrouter_key,
-        )
-
-        nvidia_key = os.environ.get("NVIDIA_API_KEY")
-        self.nv_client = AsyncOpenAI(
-            base_url="https://integrate.api.nvidia.com/v1",
-            api_key=nvidia_key,
         )
 
     # =====================================================================
@@ -73,9 +61,9 @@ class AIService:
             current_client = self.client
             current_model = self.DEFAULT_MODEL
         else:
-            # للمحادثات النصية العادية، نستخدم نيفيديا العملاق
-            current_client = self.nv_client
-            current_model = self.NVIDIA_MODEL
+            current_client = self.client
+            current_model = self.DEFAULT_MODEL
+
         try:
             response = await current_client.chat.completions.create(
                 model=current_model,
